@@ -57,7 +57,7 @@ impl<T: Config> private::Sealed<T> for Loreweaver<T> {}
 impl<T: Config> Loreweaver<T> {
     /// Maximum number of words to return in a response based on maximum tokens of GPT model or a `custom` supplied value.
     ///
-    /// Every token is worth roughly 75% of a word.
+    /// Every token equates to 75% of a word.
     fn max_words(
         model: Models,
         custom_max_tokens: Option<MaxTokens>,
@@ -120,17 +120,11 @@ pub mod models {
 
     pub type MaxTokens = u128;
 
-    /// The models that are available to use.
+    /// The ChatGPT language models that are available to use.
     #[derive(PartialEq, Eq, Clone, Debug)]
     pub enum Models {
         GPT3,
         GPT4,
-    }
-
-    impl Default for Models {
-        fn default() -> Self {
-            Self::GPT4
-        }
     }
 
     /// Clap value enum implementation for argument parsing.

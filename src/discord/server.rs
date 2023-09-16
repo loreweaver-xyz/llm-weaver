@@ -1,15 +1,13 @@
-use serenity::builder::CreateApplicationCommand;
+use core::panic;
 use serenity::http::Http;
-use serenity::model::prelude::command::Command;
 use serenity::model::prelude::interaction::Interaction;
 use serenity::model::prelude::Ready;
 use serenity::prelude::{Context, EventHandler, GatewayIntents};
 use serenity::{async_trait, Client};
 use std::env;
-use tracing::{error, info, Level};
+use tracing::{error, Level};
 use tracing::{event, instrument};
 
-use crate::discord::server::commands::command_not_implemented;
 use crate::loreweaver::Loreweaver;
 use crate::{
     loreweaver::{Config, Loom},
@@ -74,21 +72,10 @@ impl<T: Loom> Server<T> for DiscordBot {
 impl EventHandler for DiscordBot {
     #[instrument(skip(self, ctx, _ready))]
     async fn ready(&self, ctx: Context, _ready: Ready) {
-        // Register commands
-        type RegisterFn =
-            fn(command: &mut CreateApplicationCommand) -> &mut CreateApplicationCommand;
-
-        let registers: Vec<RegisterFn> = vec![Self::register_create];
-
-        for f in registers {
-            if let Err(err) =
-                Command::create_global_application_command(&ctx.http, |command| f(command)).await
-            {
-                error!("Cannot create command: {err:?}");
-            }
+        if let Err(e) = Self::setup_commands(&ctx).await {
+            error!("Failed to register discord bot commands: {e:?}");
+            panic!();
         }
-
-        info!("Loreweaver bot commands bootstrapped successfully");
     }
 
     #[instrument(skip(self, ctx, interaction))]
@@ -105,7 +92,7 @@ impl EventHandler for DiscordBot {
                 let maybe_content = match command.data.name.as_str() {
                     "create" => Loreweaver::<Self>::prompt((100, 101)).await,
                     _ => {
-                        return command_not_implemented(&ctx, &command)
+                        return Self::command_not_implemented(&ctx, &command)
                             .await
                             .expect("Failed to submit not-implemented error")
                     }
@@ -116,7 +103,10 @@ impl EventHandler for DiscordBot {
                     .edit_original_interaction_response(&ctx.http, |response| {
                         response.content(match maybe_content {
                             Ok(msg) => msg,
-                            Err(e) => "Failed to execute command".to_string(),
+                            Err(e) => {
+                                error!("Failed to edit original interaction response: {e:?}");
+                                "Failed to execute command".to_string()
+                            }
                         })
                     })
                     .await
