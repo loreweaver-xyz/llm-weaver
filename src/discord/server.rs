@@ -9,12 +9,14 @@ use std::env;
 use tracing::{error, info, Level};
 use tracing::{event, instrument};
 
+use crate::discord::server::commands::command_not_implemented;
 use crate::loreweaver::Loreweaver;
 use crate::{
     loreweaver::{Config, Loom},
     GPTModel, Server,
 };
 
+mod commands;
 mod event_handlers;
 
 #[derive(Default, Debug)]
@@ -93,7 +95,7 @@ impl EventHandler for DiscordBot {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         match interaction {
             Interaction::ApplicationCommand(command) => {
-                // Enables the bot to type in discord
+                // Enables bot "typing..." in discord
                 if let Err(err) = command.defer(&ctx.http).await {
                     error!("Cannot defer command: {err:?}");
                     return;
@@ -101,16 +103,21 @@ impl EventHandler for DiscordBot {
 
                 // Parse and execute the command
                 let maybe_content = match command.data.name.as_str() {
-                    "create" => Ok(Loreweaver::<Self>::prompt((100, 101)).await),
-                    _ => Err(()),
+                    "create" => Loreweaver::<Self>::prompt((100, 101)).await,
+                    _ => {
+                        return command_not_implemented(&ctx, &command)
+                            .await
+                            .expect("Failed to submit not-implemented error")
+                    }
                 };
 
                 // Send the response back to the user
                 if let Err(err) = command
                     .edit_original_interaction_response(&ctx.http, |response| {
-                        response.content(
-                            maybe_content.unwrap_or("Failed to process command".to_string()),
-                        )
+                        response.content(match maybe_content {
+                            Ok(msg) => msg,
+                            Err(e) => "Failed to execute command".to_string(),
+                        })
                     })
                     .await
                 {

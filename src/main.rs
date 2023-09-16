@@ -1,5 +1,6 @@
 #![feature(async_fn_in_trait)]
 #![feature(type_alias_impl_trait)]
+#![feature(async_closure)]
 
 use std::error::Error;
 

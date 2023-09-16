@@ -1,8 +1,11 @@
-use std::{marker::PhantomData, str::FromStr};
+use std::marker::PhantomData;
 
 use async_openai::{
     error::OpenAIError,
-    types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role},
+    types::{
+        ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs,
+        CreateChatCompletionResponse, Role,
+    },
 };
 use num_traits::Unsigned;
 use serenity::async_trait;
@@ -16,6 +19,7 @@ pub trait Get<T> {
 /// A trait consisting mainly of associated types implemented by [`Loreweaver`].
 ///
 /// Normally structs implementing [`crate::Server`] would implement this trait to call methods implemented by [`Loreweaver`]
+#[async_trait]
 pub trait Config {
     /// Getter for GPT model to use.
     type Model: Get<Models>;
@@ -54,7 +58,7 @@ impl<T: Config> Loreweaver<T> {
     /// Maximum number of words to return in a response based on maximum tokens of GPT model or a `custom` supplied value.
     ///
     /// Every token is worth roughly 75% of a word.
-    fn max_words<'async_trait>(
+    fn max_words(
         model: Models,
         custom_max_tokens: Option<MaxTokens>,
         tokens_in_context: MaxTokens,
@@ -74,34 +78,40 @@ impl<T: Config> Loreweaver<T> {
     }
 }
 
-enum WeaveError {
+#[derive(Debug)]
+pub enum WeaveError {
     MaximumTokensExceeded,
     OpenAIError(OpenAIError),
     Custom(String),
 }
 
-// #[async_trait]
+#[async_trait]
 impl<T: Config> Loom for Loreweaver<T> {
-    async fn prompt(loom_id: WeavingID) -> Result<String, WeaveError> {
+    async fn prompt(weaving_id: WeavingID) -> Result<String, WeaveError> {
         let model = T::Model::get();
 
-        let tokens_in_context = Self::get_story(loom_id);
+        let tokens_in_context = Loreweaver::<T>::get_story(weaving_id);
 
-        let max_words = Self::max_words(model, None, tokens_in_context);
+        let max_words = Loreweaver::<T>::max_words(model, None, tokens_in_context);
 
-        let messages = vec![ChatCompletionRequestMessageArgs::default()
-            .role(Role::User)
-            .content("Hello! How are you?")
-            .name("Michael")
-            .build()
-            .map_err(|err| Err(WeaveError::Custom(err.to_string())))?];
+        let messages: Vec<ChatCompletionRequestMessage> =
+            vec![ChatCompletionRequestMessageArgs::default()
+                .role(Role::User)
+                .content("Hello! How are you?")
+                .name("Michael")
+                .build()
+                .map_err(|err| {
+                    return Err::<String, WeaveError>(WeaveError::Custom(err.to_string()));
+                })
+                .unwrap()];
 
-        Ok(private::Sealed::do_prompt(Models::GPT4, messages)
-            .await
-            .unwrap()
-            .choices[0]
-            .message
-            .content)
+        let result: Result<CreateChatCompletionResponse, OpenAIError> =
+            <Loreweaver<T> as private::Sealed<T>>::do_prompt(Models::GPT4, messages, max_words)
+                .await;
+
+        let result = result.unwrap().choices[0].clone().message.content.unwrap();
+
+        Ok(result)
     }
 }
 
@@ -190,17 +200,16 @@ mod private {
         static ref OPENAI_CLIENT: RwLock<async_openai::Client<OpenAIConfig>> = RwLock::new(async_openai::Client::new());
     }
 
-    type PromptMessages = impl Into<Vec<ChatCompletionRequestMessage>> + Send + Clone;
-
     pub trait Sealed<T: Config> {
         /// The action to query ChatGPT with the supplied configurations and messages.
         async fn do_prompt(
             model: Models,
-            msgs: PromptMessages,
+            msgs: impl Into<Vec<ChatCompletionRequestMessage>> + Send + Clone,
+            _max_words: MaxTokens,
         ) -> Result<CreateChatCompletionResponse, OpenAIError> {
-            let mut vec_msgs: PromptMessages;
-            msgs.clone_into(&mut vec_msgs);
             let tokens = msgs
+                .clone()
+                .into()
                 .iter()
                 .map(|msg: &ChatCompletionRequestMessage| {
                     msg.content
