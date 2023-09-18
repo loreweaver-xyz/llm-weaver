@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!(
         task = "dotenv_setup",
         result = "success",
-        "dotenv loaded successfully",
+        "dotenv loaded successfully"
     );
 
     let args = Args::parse();

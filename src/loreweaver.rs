@@ -44,6 +44,12 @@ type WeavingID = (ServerID, StoryID);
 /// The implementations should handle all form of validation and usage tracking all while abstracting the logic from the services calling them.
 #[async_trait]
 pub trait Loom {
+    /// Prompt Loreweaver for a response for [`WeavingID`].
+    ///
+    /// Prompt ChatGPT with a `msg_history` and a `new_msg`.
+    ///
+    /// If 80% of the maximum number of tokens allowed in a message history for the configured ChatGPT [`Models`] has been reached,
+    /// a summary will be generated instead of the current message history and saved to the cloud. A new message history will begin.
     async fn prompt(loom_id: WeavingID) -> Result<String, WeaveError>;
 }
 
@@ -181,17 +187,34 @@ mod private {
             CreateChatCompletionResponse,
         },
     };
+    use lazy_static::lazy_static;
     use tiktoken_rs::p50k_base;
     use tokio::sync::RwLock;
+    use tracing::error;
 
     use super::{
         models::{MaxTokens, Models},
         Config,
     };
 
-    lazy_static::lazy_static! {
+    /// Loreweaver system instructions with number of ChatGPT tokens.
+    type System = (String, u128);
+
+    lazy_static! {
         /// The OpenAI client to interact with the OpenAI API.
         static ref OPENAI_CLIENT: RwLock<async_openai::Client<OpenAIConfig>> = RwLock::new(async_openai::Client::new());
+
+        /// Loreweaver System instructions
+        static ref LOREWEAVER_SYSTEM: RwLock<System> = {
+            let system = std::fs::read_to_string("loreweaver-system.txt").map_err(|e| {
+                error!("Failed to read loreweaver-system.txt: {e:?}");
+                panic!()
+            }).unwrap();
+
+            let tokens = system.count_tokens();
+
+            RwLock::new((system, tokens))
+        };
     }
 
     pub trait Sealed<T: Config> {
