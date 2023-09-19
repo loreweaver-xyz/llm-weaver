@@ -21,3 +21,4 @@ tiktoken-rs = "0.5.1"
 tokio = { version = "1.32.0", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+google-cloud-storage = "0.13.1"

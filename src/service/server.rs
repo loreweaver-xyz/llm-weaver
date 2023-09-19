@@ -7,7 +7,6 @@ pub struct ApiService;
 
 impl Config for ApiService {
     type Model = GPTModel;
-    type MaxTokenResponse = u64;
 }
 
 impl<T: Loom> Server<T> for ApiService {

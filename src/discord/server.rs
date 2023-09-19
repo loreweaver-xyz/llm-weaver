@@ -22,7 +22,6 @@ pub struct DiscordBot;
 
 impl Config for DiscordBot {
     type Model = GPTModel;
-    type MaxTokenResponse = u64;
 }
 
 impl<T: Loom> Server<T> for DiscordBot {

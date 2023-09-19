@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{env, marker::PhantomData};
 
 use async_openai::{
     error::OpenAIError,
@@ -7,8 +7,11 @@ use async_openai::{
         CreateChatCompletionResponse, Role,
     },
 };
-use num_traits::Unsigned;
+use google_cloud_storage::client::{Client, ClientConfig};
+use google_cloud_storage::http::objects::download::Range;
+use google_cloud_storage::http::objects::get::GetObjectRequest;
 use serenity::async_trait;
+use tokio::sync::OnceCell;
 
 use self::models::{MaxTokens, Models};
 
@@ -23,8 +26,6 @@ pub trait Get<T> {
 pub trait Config {
     /// Getter for GPT model to use.
     type Model: Get<Models>;
-    /// Determines the maximum number of tokens to return in a response from ChatGPT
-    type MaxTokenResponse: Unsigned;
 }
 
 /// Encompasses many [`StoryID`]s.
@@ -91,6 +92,11 @@ pub enum WeaveError {
     Custom(String),
 }
 
+/// Storage client to access GCP Storage
+static STORAGE_CLIENT: OnceCell<Client> = OnceCell::const_new();
+/// Storage bucket in GCP Storage to store all message histories
+static STORAGE_BUCKET: OnceCell<String> = OnceCell::const_new();
+
 #[async_trait]
 impl<T: Config> Loom for Loreweaver<T> {
     async fn prompt(weaving_id: WeavingID) -> Result<String, WeaveError> {
@@ -100,7 +106,7 @@ impl<T: Config> Loom for Loreweaver<T> {
 
         let max_words = Loreweaver::<T>::max_words(model, None, tokens_in_context);
 
-        let messages: Vec<ChatCompletionRequestMessage> =
+        let mut messages: Vec<ChatCompletionRequestMessage> =
             vec![ChatCompletionRequestMessageArgs::default()
                 .role(Role::User)
                 .content("Hello! How are you?")
@@ -111,9 +117,36 @@ impl<T: Config> Loom for Loreweaver<T> {
                 })
                 .unwrap()];
 
+        let client: &Client = STORAGE_CLIENT
+            .get_or_init(async || {
+                let config = ClientConfig::default().with_auth().await.unwrap();
+                Client::new(config)
+            })
+            .await;
+
+        let res = client
+            .download_object(
+                &GetObjectRequest {
+                    // TODO: Try not to use async
+                    bucket: STORAGE_BUCKET
+                        .get_or_init(async || env::var("STORAGE_BUCKET").unwrap())
+                        .await
+                        .to_owned(),
+                    object: format!("1090072748195328091/1090072749076135948/part-1.json"),
+                    ..Default::default()
+                },
+                &Range::default(),
+            )
+            .await
+            .unwrap();
+
         let result: Result<CreateChatCompletionResponse, OpenAIError> =
-            <Loreweaver<T> as private::Sealed<T>>::do_prompt(Models::GPT4, messages, max_words)
-                .await;
+            <Loreweaver<T> as private::Sealed<T>>::do_prompt(
+                Models::GPT4,
+                &mut messages,
+                max_words,
+            )
+            .await;
 
         let result = result.unwrap().choices[0].clone().message.content.unwrap();
 
@@ -169,7 +202,7 @@ pub mod models {
         }
 
         /// Maximum number of tokens that can be processed at once by ChatGPT.
-        fn max_context_tokens(&self) -> MaxTokens {
+        pub fn max_context_tokens(&self) -> MaxTokens {
             match self {
                 Self::GPT3 => 4_096,
                 Self::GPT4 => 8_192,
@@ -179,6 +212,8 @@ pub mod models {
 }
 
 mod private {
+    use crate::loreweaver::Get;
+    use async_openai::types::{ChatCompletionRequestMessageArgs, Role};
     use async_openai::{
         config::OpenAIConfig,
         error::OpenAIError,
@@ -221,13 +256,22 @@ mod private {
         /// The action to query ChatGPT with the supplied configurations and messages.
         async fn do_prompt(
             model: Models,
-            msgs: impl Into<Vec<ChatCompletionRequestMessage>> + Send + Clone,
+            msgs: &mut Vec<ChatCompletionRequestMessage>,
             _max_words: MaxTokens,
         ) -> Result<CreateChatCompletionResponse, OpenAIError> {
+            // Add the system to the beginning of the message history
+            msgs.splice(
+                0..0,
+                [ChatCompletionRequestMessageArgs::default()
+                    .content(LOREWEAVER_SYSTEM.read().await.clone().0)
+                    .role(Role::System)
+                    .build()
+                    .unwrap()],
+            );
+
             let tokens = msgs
-                .clone()
-                .into()
                 .iter()
+                .skip(1)
                 .map(|msg: &ChatCompletionRequestMessage| {
                     msg.content
                         .as_ref()
@@ -239,9 +283,9 @@ mod private {
             let request = CreateChatCompletionRequestArgs::default()
                 // TODO: Set max tokens response based on user subscription
                 // TODO: default max token response is a u128 but we would potentially lose some bytes from this primitive type conversion to u16
-                .max_tokens(Models::default_max_response_tokens(&model, tokens) as u16)
+                .max_tokens((T::Model::get().max_context_tokens() - tokens) as u16)
                 .model(model.name())
-                .messages(msgs)
+                .messages(msgs.to_owned())
                 .build()?;
 
             OPENAI_CLIENT.read().await.chat().create(request).await

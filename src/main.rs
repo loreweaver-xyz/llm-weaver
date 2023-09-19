@@ -14,6 +14,7 @@ use tracing_subscriber::fmt;
 mod discord;
 mod loreweaver;
 mod service;
+mod storage;
 
 #[derive(Parser, Debug)]
 struct Args {
