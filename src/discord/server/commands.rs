@@ -9,6 +9,9 @@ use tracing::{error, info};
 use super::DiscordBot;
 
 impl DiscordBot {
+    /// Setup application commands.
+    ///
+    /// Add new commands to the `registers` vec.
     pub(crate) async fn setup_commands(ctx: &Context) -> Result<(), ()> {
         // Register commands functions
         type RegisterFn =
