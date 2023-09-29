@@ -46,7 +46,7 @@ impl DiscordBot {
             .await
             .map_err(|err| {
                 error!("Interaction response failed: {}", err);
-                WeaveError::Custom("Failed to execute interaction response".to_string())
+                WeaveError::Custom("Failed to execute interaction response".into())
             })
     }
 }

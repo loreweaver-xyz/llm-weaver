@@ -104,7 +104,7 @@ impl EventHandler for DiscordBot {
                             Ok(msg) => msg,
                             Err(e) => {
                                 error!("Failed to edit original interaction response: {e:?}");
-                                "Failed to execute command".to_string()
+                                "Failed to execute command".into()
                             }
                         })
                     })
