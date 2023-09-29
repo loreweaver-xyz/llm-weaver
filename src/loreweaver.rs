@@ -1,23 +1,22 @@
-use std::{env, marker::PhantomData};
+use std::{marker::PhantomData, sync::Arc};
 
 use async_openai::{
 	error::OpenAIError,
-	types::{
-		ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs,
-		CreateChatCompletionResponse, Role,
-	},
+	types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role},
 };
-use google_cloud_storage::{
-	client::{Client, ClientConfig},
-	http::objects::{download::Range, get::GetObjectRequest, list::ListObjectsRequest},
-};
-use serenity::{async_trait, json::prelude::Serialize, model::prelude::Deserialize};
-use tokio::sync::OnceCell;
+use serde::{Deserialize, Serialize};
+use serenity::async_trait;
+use tracing::error;
 
 use self::models::{MaxTokens, Models};
 
 pub trait Get<T> {
 	fn get() -> T;
+}
+
+#[async_trait]
+pub trait StorageHandler {
+	async fn get(id: WeavingID) -> Result<Option<StoryPart>, WeaveError>;
 }
 
 /// A trait consisting mainly of associated types implemented by [`Loreweaver`].
@@ -28,6 +27,8 @@ pub trait Get<T> {
 pub trait Config {
 	/// Getter for GPT model to use.
 	type Model: Get<Models>;
+	/// Storage handler implementation which is used to store and retrieve story parts.
+	type Storage: StorageHandler;
 }
 
 /// Encompasses many [`StoryID`]s.
@@ -37,7 +38,46 @@ type StoryID = u128;
 /// Type alias encompassing a server id and a story id.
 ///
 /// Used mostly for querying some blob storage in the form of a path.
-type WeavingID = (ServerID, StoryID);
+pub type WeavingID = (ServerID, StoryID);
+
+/// An platform agnostic type representing a user's account ID.
+type AccountId = u64;
+
+/// Context message that represent a single message in a [`StoryPart`].
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+pub struct ContextMessage {
+	pub role: String,
+	pub user_id: Option<String>,
+	pub username: Option<String>,
+	pub content: String,
+	pub timestamp: String,
+}
+
+/// Represents a single part of a story containing a list of messages along with other metadata.
+///
+/// ChatGPT can only hold a limited amount of tokens in a the entire message history/context.
+/// Therefore, at every [`Loom::prompt`] execution, we must keep track of the number of
+/// `context_tokens` in the current story part and if it exceeds the maximum number of tokens
+/// allowed for the current GPT [`Models`], then we must generate a summary of the current
+/// story part and use that as the starting point for the next story part. This is one of the
+/// biggest challenges for Loreweaver to keep a consistent narrative throughout the many story
+/// parts.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct StoryPart {
+	/// The story part number.
+	pub number: u16,
+	/// Number of players that are part of the story. (typically this changes based on players
+	/// entering the commands `/leave` or `/join`).
+	///
+	/// When generating a new story part (N + 1, where N is the current story part number), we need
+	/// to copy over the same number of players. The story must remain consistent throughout each
+	/// part.
+	pub players: Vec<AccountId>,
+	/// Total number of _GPT tokens_ in the story part.
+	pub context_tokens: u128,
+	/// List of [`ContextMessage`]s in the story part.
+	pub context_messages: Vec<ContextMessage>,
+}
 
 /// A trait that defines all of the public associated methods that [`Loreweaver`] implements.
 ///
@@ -63,50 +103,7 @@ pub trait Loom {
 /// All core functionality is implemented by this struct.
 pub struct Loreweaver<T: Config>(PhantomData<T>);
 
-impl<T: Config> private::Sealed<T> for Loreweaver<T> {}
-
-/// Storage client to access GCP Storage
-static STORAGE_CLIENT: OnceCell<Client> = OnceCell::const_new();
-/// Storage bucket in GCP Storage to store all message histories
-static STORAGE_BUCKET: OnceCell<String> = OnceCell::const_new();
-
-/// An platform agnostic type representing a user's account ID.
-type AccountId = u64;
-
-/// Context message that represent a single message in a [`StoryPart`].
-#[derive(Default, Clone, Debug, Serialize, Deserialize)]
-pub struct ContextMessage {
-	pub role: String,
-	pub user_id: Option<String>,
-	pub username: Option<String>,
-	pub content: String,
-	pub timestamp: String,
-}
-
-/// Represents a single part of a story containing a list of messages along with other metadata.
-///
-/// ChatGPT can only hold a limited amount of tokens in a the entire message history/context.
-/// Therefore, at every [`Loom::prompt`] execution, we must keep track of the number of tokens
-/// in the current story part and if it exceeds the maximum number of tokens allowed for the
-/// current GPT model, then we must generate a summary of the current story part and use that
-/// as the starting point for the next story part. This is one of the biggest challenges for
-/// Loreweaver to keep a consistent narrative throughout the many story parts.
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub struct StoryPart {
-	/// The story part number.
-	pub number: u16,
-	/// Total number of _GPT tokens_ in the story part.
-	pub total_tokens: u128,
-	/// Number of players that are part of the story. (typically this changes based on players
-	/// entering the commands `/leave` or `/join`).
-	///
-	/// When generating a new story part (N + 1, where N is the current story part number), we need
-	/// to copy over the same number of players. The story must remain consistent throughout each
-	/// part.
-	pub players: Vec<AccountId>,
-	/// List of [`ContextMessage`]s in the story part.
-	pub context_messages: Vec<ContextMessage>,
-}
+impl<T: Config> secret_lore::Sealed<T> for Loreweaver<T> {}
 
 impl<T: Config> Loreweaver<T> {
 	/// Maximum number of words to return in a response based on maximum tokens of GPT model or a
@@ -116,62 +113,12 @@ impl<T: Config> Loreweaver<T> {
 	fn max_words(
 		model: Models,
 		custom_max_tokens: Option<MaxTokens>,
-		tokens_in_context: MaxTokens,
+		context_tokens: MaxTokens,
 	) -> MaxTokens {
 		let max_tokens = custom_max_tokens
-			.unwrap_or(Models::default_max_response_tokens(&model, tokens_in_context));
+			.unwrap_or(Models::default_max_response_tokens(&model, context_tokens));
 
 		(max_tokens as f64 * 0.75) as MaxTokens
-	}
-
-	/// Download _last_ story part from GCP Storage.
-	///
-	/// None is returned if there are no story parts for the given `weaving_id`. This means that
-	/// the story has not been started yet.
-	async fn get_story(weaving_id: WeavingID) -> Result<Option<StoryPart>, WeaveError> {
-		let client: &Client = STORAGE_CLIENT
-			.get_or_init(async || {
-				let config = ClientConfig::default().with_auth().await.unwrap();
-				Client::new(config)
-			})
-			.await;
-
-		let bucket = STORAGE_BUCKET
-			.get_or_init(async || env::var("STORAGE_BUCKET").unwrap())
-			.await
-			.to_owned();
-
-		let parts = client
-			.list_objects(&ListObjectsRequest { bucket: bucket.clone(), ..Default::default() })
-			.await
-			.unwrap()
-			.items
-			.unwrap_or_default();
-
-		let maybe_last_part = parts.last();
-
-		match maybe_last_part {
-			None => Ok(None),
-			Some(last_part) => {
-				let bytes = client
-					.download_object(
-						&GetObjectRequest {
-							// TODO: Try not to use async
-							bucket,
-							object: format!(
-								"{}/{}/{}.json",
-								weaving_id.0, weaving_id.1, last_part.name
-							),
-							..Default::default()
-						},
-						&Range::default(),
-					)
-					.await
-					.unwrap();
-
-				Ok(Some(serde_json::from_slice(&bytes).unwrap()))
-			},
-		}
 	}
 }
 
@@ -186,11 +133,62 @@ impl<T: Config> Loom for Loreweaver<T> {
 	async fn prompt(weaving_id: WeavingID) -> Result<String, WeaveError> {
 		let model = T::Model::get();
 
-		let tokens_in_context = Loreweaver::<T>::get_story(weaving_id);
+		let story_part = Arc::new(T::Storage::get(weaving_id).await?);
+		let story_part_clone = Arc::clone(&story_part);
 
-		let max_words = Loreweaver::<T>::max_words(model, None, tokens_in_context);
+		let context_messages = tokio::spawn(async move {
+			match story_part.as_ref() {
+				Some(part) => part
+					.context_messages
+					.iter()
+					.map(|msg: &ContextMessage| {
+						Ok(ChatCompletionRequestMessageArgs::default()
+							.content(msg.content.clone())
+							.role(match msg.role.as_str() {
+								"system" => Role::System,
+								"assistant" => Role::Assistant,
+								"user" => Role::User,
+								_ => {
+									error!("Invalid role: {}", msg.role);
+									return Err(WeaveError::Custom(format!(
+										"Invalid role: {}",
+										msg.role
+									)))
+								},
+							})
+							.name(msg.username.as_deref().unwrap_or_default())
+							.build()
+							.unwrap())
+					})
+					.collect::<Result<Vec<ChatCompletionRequestMessage>, WeaveError>>(),
+				None => Ok(vec![ChatCompletionRequestMessageArgs::default()
+					.role(Role::System)
+					.content(secret_lore::LOREWEAVER_SYSTEM.read().await.clone().0)
+					.build()
+					.map_err(|err| {
+						return Err::<String, WeaveError>(WeaveError::Custom(err.to_string()))
+					})
+					.expect("Failed to build ChatCompletionRequestMessage")]),
+			}
+			.unwrap()
+		});
 
-		let mut messages: Vec<ChatCompletionRequestMessage> =
+		let max_words = tokio::spawn(async move {
+			Loreweaver::<T>::max_words(
+				model,
+				None,
+				match story_part_clone.as_ref() {
+					Some(part) => part.context_tokens,
+					None => 0,
+				},
+			)
+		});
+
+		let mut context_messages = context_messages.await.map_err(|_e| {
+			WeaveError::Custom("Failed to complete context messages thread exection".into())
+		})?;
+
+		context_messages.extend(
 			vec![ChatCompletionRequestMessageArgs::default()
 				.role(Role::User)
 				.content("Hello! How are you?")
@@ -199,12 +197,16 @@ impl<T: Config> Loom for Loreweaver<T> {
 				.map_err(|err| {
 					return Err::<String, WeaveError>(WeaveError::Custom(err.to_string()))
 				})
-				.unwrap()];
+				.expect("Failed to build ChatCompletionRequestMessage")]
+			.into_iter(),
+		);
 
-		match <Loreweaver<T> as private::Sealed<T>>::do_prompt(
+		match <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
 			Models::GPT4,
-			&mut messages,
-			max_words,
+			&mut context_messages,
+			max_words.await.map_err(|_e| {
+				WeaveError::Custom("Failed to complete max words thread exection".into())
+			})?,
 		)
 		.await
 		{
@@ -273,7 +275,7 @@ pub mod models {
 	}
 }
 
-mod private {
+mod secret_lore {
 	use crate::loreweaver::Get;
 	use async_openai::{
 		config::OpenAIConfig,
@@ -301,7 +303,7 @@ mod private {
 		static ref OPENAI_CLIENT: RwLock<async_openai::Client<OpenAIConfig>> = RwLock::new(async_openai::Client::new());
 
 		/// Loreweaver System instructions
-		static ref LOREWEAVER_SYSTEM: RwLock<System> = {
+		pub static ref LOREWEAVER_SYSTEM: RwLock<System> = {
 			let system = std::fs::read_to_string("loreweaver-system.txt").map_err(|e| {
 				error!("Failed to read loreweaver-system.txt: {e:?}");
 				panic!()
