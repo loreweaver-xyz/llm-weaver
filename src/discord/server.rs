@@ -7,7 +7,8 @@ use serenity::{
 	Client,
 };
 use std::env;
-use tracing::{error, event, instrument, Level};
+use tokio::time::Instant;
+use tracing::{error, event, info, instrument, Level};
 
 use crate::{
 	loreweaver::{Config, Loom, Loreweaver},
@@ -76,10 +77,12 @@ impl EventHandler for DiscordBot {
 		}
 	}
 
-	#[instrument(skip(self, ctx, interaction))]
+	#[instrument(skip(self, ctx, interaction), fields(time_to_completion))]
 	async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
 		match interaction {
 			Interaction::ApplicationCommand(command) => {
+				let start = Instant::now();
+
 				// Enables bot "typing..." in discord
 				if let Err(err) = command.defer(&ctx.http).await {
 					error!("Cannot defer command: {err:?}");
@@ -88,7 +91,15 @@ impl EventHandler for DiscordBot {
 
 				// Parse and execute the command
 				let maybe_content = match command.data.name.as_str() {
-					"create" => Loreweaver::<Self>::prompt((100, 101)).await,
+					"create" =>
+						Loreweaver::<Self>::prompt(
+							(100, 101),
+							"Hello Loreweaver!".to_string(),
+							12345,
+							command.user.clone().name,
+							command.user.nick_in(&ctx, command.guild_id.unwrap()).await,
+						)
+						.await,
 					_ =>
 						return Self::command_not_implemented(&ctx, &command)
 							.await
@@ -110,6 +121,10 @@ impl EventHandler for DiscordBot {
 				{
 					error!("Cannot edit original interaction response: {err:?}");
 				}
+
+				info!("Command executed in {} seconds", start.elapsed().as_secs());
+
+				tracing::Span::current().record("time_to_completion", start.elapsed().as_secs());
 			},
 			_ => {},
 		}

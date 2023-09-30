@@ -6,7 +6,7 @@ use async_openai::{
 };
 use serde::{Deserialize, Serialize};
 use serenity::async_trait;
-use tracing::error;
+use tracing::{info, instrument};
 
 use self::models::{MaxTokens, Models};
 
@@ -47,7 +47,7 @@ type AccountId = u64;
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct ContextMessage {
 	pub role: String,
-	pub user_id: Option<String>,
+	pub account_id: Option<String>,
 	pub username: Option<String>,
 	pub content: String,
 	pub timestamp: String,
@@ -58,10 +58,9 @@ pub struct ContextMessage {
 /// ChatGPT can only hold a limited amount of tokens in a the entire message history/context.
 /// Therefore, at every [`Loom::prompt`] execution, we must keep track of the number of
 /// `context_tokens` in the current story part and if it exceeds the maximum number of tokens
-/// allowed for the current GPT [`Models`], then we must generate a summary of the current
-/// story part and use that as the starting point for the next story part. This is one of the
-/// biggest challenges for Loreweaver to keep a consistent narrative throughout the many story
-/// parts.
+/// allowed for the current GPT [`Models`], then we must generate a summary of the current story
+/// part and use that as the starting point for the next story part. This is one of the biggest
+/// challenges for Loreweaver to keep a consistent narrative throughout the many story parts.
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct StoryPart {
 	/// The story part number.
@@ -90,12 +89,18 @@ pub struct StoryPart {
 pub trait Loom {
 	/// Prompt Loreweaver for a response for [`WeavingID`].
 	///
-	/// Prompt ChatGPT with a `msg_history` and a `new_msg`.
+	/// Prompts ChatGPT with the current [`StoryPart`] and the `msg`.
 	///
 	/// If 80% of the maximum number of tokens allowed in a message history for the configured
 	/// ChatGPT [`Models`] has been reached, a summary will be generated instead of the current
 	/// message history and saved to the cloud. A new message history will begin.
-	async fn prompt(loom_id: WeavingID) -> Result<String, WeaveError>;
+	async fn prompt(
+		loom_id: WeavingID,
+		msg: String,
+		account_id: AccountId,
+		username: String,
+		pseudo_username: Option<String>,
+	) -> Result<String, WeaveError>;
 }
 
 /// The bread & butter of Loreweaver.
@@ -130,7 +135,14 @@ pub enum WeaveError {
 
 #[async_trait]
 impl<T: Config> Loom for Loreweaver<T> {
-	async fn prompt(weaving_id: WeavingID) -> Result<String, WeaveError> {
+	#[instrument]
+	async fn prompt(
+		weaving_id: WeavingID,
+		msg: String,
+		_account_id: AccountId,
+		username: String,
+		pseudo_username: Option<String>,
+	) -> Result<String, WeaveError> {
 		let model = T::Model::get();
 
 		let story_part = Arc::new(T::Storage::get(weaving_id).await?);
@@ -138,39 +150,35 @@ impl<T: Config> Loom for Loreweaver<T> {
 
 		let context_messages = tokio::spawn(async move {
 			match story_part.as_ref() {
-				Some(part) => part
-					.context_messages
-					.iter()
-					.map(|msg: &ContextMessage| {
-						Ok(ChatCompletionRequestMessageArgs::default()
-							.content(msg.content.clone())
-							.role(match msg.role.as_str() {
-								"system" => Role::System,
-								"assistant" => Role::Assistant,
-								"user" => Role::User,
-								_ => {
-									error!("Invalid role: {}", msg.role);
-									return Err(WeaveError::Custom(format!(
-										"Invalid role: {}",
-										msg.role
-									)))
-								},
-							})
-							.name(msg.username.as_deref().unwrap_or_default())
-							.build()
-							.unwrap())
-					})
-					.collect::<Result<Vec<ChatCompletionRequestMessage>, WeaveError>>(),
-				None => Ok(vec![ChatCompletionRequestMessageArgs::default()
-					.role(Role::System)
-					.content(secret_lore::LOREWEAVER_SYSTEM.read().await.clone().0)
-					.build()
-					.map_err(|err| {
-						return Err::<String, WeaveError>(WeaveError::Custom(err.to_string()))
-					})
-					.expect("Failed to build ChatCompletionRequestMessage")]),
+				Some(part) => {
+					// TODO: Call `Models` to verify that the 80% threshold has not been reached. If
+					// it has been reached, then generate a summary of the current story part and
+					// save it to the next story part.
+
+					part.context_messages
+						.iter()
+						.map(|msg: &ContextMessage| {
+							Ok(ChatCompletionRequestMessageArgs::default()
+								.content(msg.content.clone())
+								.role(match msg.role.as_str() {
+									"system" => Role::System,
+									"assistant" => Role::Assistant,
+									"user" => Role::User,
+									_ =>
+										return Err(WeaveError::Custom(format!(
+											"Invalid role: {}",
+											msg.role
+										))),
+								})
+								.name(msg.username.as_deref().unwrap_or_default())
+								.build()
+								.unwrap())
+						})
+						.collect::<Result<Vec<ChatCompletionRequestMessage>, WeaveError>>()
+				},
+				None => Ok(vec![]),
 			}
-			.unwrap()
+			.unwrap_or_default()
 		});
 
 		let max_words = tokio::spawn(async move {
@@ -191,8 +199,8 @@ impl<T: Config> Loom for Loreweaver<T> {
 		context_messages.extend(
 			vec![ChatCompletionRequestMessageArgs::default()
 				.role(Role::User)
-				.content("Hello! How are you?")
-				.name("Michael")
+				.content(msg)
+				.name(format!("{}{}", username, pseudo_username.unwrap_or_default()))
 				.build()
 				.map_err(|err| {
 					return Err::<String, WeaveError>(WeaveError::Custom(err.to_string()))
@@ -200,6 +208,8 @@ impl<T: Config> Loom for Loreweaver<T> {
 				.expect("Failed to build ChatCompletionRequestMessage")]
 			.into_iter(),
 		);
+
+		info!("Prompting ChatGPT...");
 
 		match <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
 			Models::GPT4,
@@ -210,7 +220,11 @@ impl<T: Config> Loom for Loreweaver<T> {
 		)
 		.await
 		{
-			Ok(res) => Ok(res.choices[0].clone().message.content.unwrap()),
+			Ok(res) => Ok(match res.choices[0].clone().message.content {
+				Some(content) => content,
+				None =>
+					return Err(WeaveError::Custom("Failed to get content from response".into())),
+			}),
 			Err(err) => Err(WeaveError::OpenAIError(err)),
 		}
 	}
@@ -326,25 +340,16 @@ mod secret_lore {
 			msgs.splice(
 				0..0,
 				[ChatCompletionRequestMessageArgs::default()
-					.content(LOREWEAVER_SYSTEM.read().await.clone().0)
 					.role(Role::System)
-					.build()
-					.unwrap()],
+					.content(LOREWEAVER_SYSTEM.read().await.clone().0)
+					.build()?],
 			);
-
-			let tokens = msgs
-				.iter()
-				.skip(1)
-				.map(|msg: &ChatCompletionRequestMessage| {
-					msg.content.as_ref().map(|content| content.count_tokens()).unwrap_or(0)
-				})
-				.sum::<MaxTokens>();
 
 			let request = CreateChatCompletionRequestArgs::default()
 				// TODO: Set max tokens response based on user subscription
-				// TODO: default max token response is a u128 but we would potentially lose some
-				// bytes from this primitive type conversion to u16
-				.max_tokens((T::Model::get().max_context_tokens() - tokens) as u16)
+				// TODO: use `_max_words` to limit the number of words in the response. ChatGPT does
+				// not  make a coherent response while respecting the max_tokens() limit.
+				.max_tokens(300u16)
 				.model(model.name())
 				.messages(msgs.to_owned())
 				.build()?;

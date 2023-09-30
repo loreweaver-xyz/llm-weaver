@@ -56,10 +56,12 @@ impl StorageHandler for Storage {
 						},
 						&Range::default(),
 					)
-					.await
-					.unwrap();
+					.await;
 
-				Ok(Some(serde_json::from_slice(&bytes).unwrap()))
+				match bytes {
+					Err(_) => Ok(None),
+					Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).unwrap())),
+				}
 			},
 		}
 	}
