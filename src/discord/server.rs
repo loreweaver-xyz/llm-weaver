@@ -2,7 +2,7 @@ use core::panic;
 use serenity::{
 	async_trait,
 	http::Http,
-	model::prelude::{interaction::Interaction, Ready},
+	model::prelude::{command::Command, interaction::Interaction, Ready},
 	prelude::{Context, EventHandler, GatewayIntents},
 	Client,
 };
@@ -17,7 +17,6 @@ use crate::{
 };
 
 mod commands;
-mod event_handlers;
 
 #[derive(Default, Debug)]
 pub struct DiscordBot;
@@ -69,12 +68,20 @@ impl<T: Loom> Server<T> for DiscordBot {
 /// Discord bot event handler implementations.
 #[async_trait]
 impl EventHandler for DiscordBot {
-	#[instrument(skip(self, ctx, _ready))]
-	async fn ready(&self, ctx: Context, _ready: Ready) {
-		if let Err(e) = Self::setup_commands(&ctx).await {
-			error!("Failed to register discord bot commands: {e:?}");
-			panic!();
+	#[instrument(skip(self, ctx, ready))]
+	async fn ready(&self, ctx: Context, ready: Ready) {
+		println!("{} is connected!", ready.user.name);
+
+		if let Err(e) = Command::create_global_application_command(&ctx.http, |command| {
+			commands::create::register(command)
+		})
+		.await
+		{
+			error!("Cannot create command: {e:?}");
+			panic!("Cannot create command");
 		}
+
+		info!("Loreweaver bot commands bootstrapped successfully");
 	}
 
 	#[instrument(skip(self, ctx, interaction), fields(time_to_completion))]
@@ -89,33 +96,39 @@ impl EventHandler for DiscordBot {
 					return
 				}
 
+				if let Err(e) = Loreweaver::<Self>::prompt(
+					(100, 101),
+					"Hello Loreweaver!".to_string(),
+					12345,
+					command.user.clone().name,
+					command.user.nick_in(&ctx, command.guild_id.unwrap()).await,
+				)
+				.await
+				{
+					error!("Cannot prompt loreweaver: {e:?}");
+					return
+				}
+
 				// Parse and execute the command
 				let maybe_content = match command.data.name.as_str() {
-					"create" =>
-						Loreweaver::<Self>::prompt(
-							(100, 101),
-							"Hello Loreweaver!".to_string(),
-							12345,
-							command.user.clone().name,
-							command.user.nick_in(&ctx, command.guild_id.unwrap()).await,
-						)
-						.await,
+					"create" => commands::create::run(&ctx, &command).await,
 					_ =>
-						return Self::command_not_implemented(&ctx, &command)
+						return commands::utilities::command_not_implemented(&ctx, &command)
 							.await
 							.expect("Failed to submit not-implemented error"),
 				};
 
-				// Send the response back to the user
+				let content = match maybe_content {
+					Ok(content) => content,
+					Err(e) => {
+						error!("Failed to execute command: {e:?}");
+						"Oh! Something went wrong, I wasn't able to create the story channel in the discord server. Please checkout out our troubleshooting docs!".to_string()
+					},
+				};
+
 				if let Err(err) = command
 					.edit_original_interaction_response(&ctx.http, |response| {
-						response.content(match maybe_content {
-							Ok(msg) => msg,
-							Err(e) => {
-								error!("Failed to edit original interaction response: {e:?}");
-								"Failed to execute command".into()
-							},
-						})
+						response.content(content)
 					})
 					.await
 				{

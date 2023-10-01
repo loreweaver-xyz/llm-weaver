@@ -290,7 +290,6 @@ pub mod models {
 }
 
 mod secret_lore {
-	use crate::loreweaver::Get;
 	use async_openai::{
 		config::OpenAIConfig,
 		error::OpenAIError,
