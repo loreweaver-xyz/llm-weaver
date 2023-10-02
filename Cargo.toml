@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-openai = "0.14.2"
+async-openai = "0.14.3"
 serenity = { version = "0.11.6", default-features = false, features = [
     "client",
     "gateway",
@@ -24,3 +24,10 @@ tracing-subscriber = "0.3.17"
 google-cloud-storage = "0.13.1"
 serde_json = "1.0.107"
 serde = { version = "1.0.188", features = ["derive"] }
+redis = { version = "0.23.3", features = [
+    "tokio-comp",
+    "tokio-rustls-comp",
+    "json",
+] }
+chrono = "0.4.31"
+redis-macros = "0.2.1"
