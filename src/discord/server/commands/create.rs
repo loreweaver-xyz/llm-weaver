@@ -1,54 +1,80 @@
 use serenity::{
 	builder::{CreateApplicationCommand, CreateApplicationCommandOption},
 	model::prelude::{
-		application_command::ApplicationCommandInteraction, command::CommandOptionType, ChannelType,
+		application_command::{ApplicationCommandInteraction, CommandDataOption},
+		command::CommandOptionType,
+		ChannelType,
 	},
 	prelude::Context,
 };
+use tracing::info;
 
 use crate::loreweaver::WeaveError;
 
-use super::utilities::extract_string_option_value;
+use super::utilities::{extract_string_option_value, get_command_option};
 
 pub async fn run(
 	ctx: &Context,
 	command: &ApplicationCommandInteraction,
 ) -> Result<String, WeaveError> {
 	let guild_id = &command.guild_id.unwrap();
-	let user = &command.user;
 	let options = &command.data.options;
 
-	let story_size = extract_string_option_value(&options[0]).unwrap();
-	let hardcore_mode = extract_string_option_value(&options[1]).unwrap();
-	let private_story = extract_string_option_value(&options[2]).unwrap();
-	let story_theme_1 = extract_string_option_value(&options[3]).unwrap();
-	let story_theme_2 = match options.len() > 4 {
-		true => Some(extract_string_option_value(&options[4]).unwrap()),
-		false => None,
-	};
-	let story_name = match options.len() > 5 {
-		true => Some(extract_string_option_value(&options[5]).unwrap()),
-		false => None,
-	};
-	let story_description = match options.len() > 6 {
-		true => Some(extract_string_option_value(&options[6]).unwrap()),
-		false => None,
+	let story_size = get_command_option(options, STORY_SIZE_OPTION, true)?.unwrap();
+	let hardcore_mode = get_command_option(options, HARDCORE_MODE_OPTION, true)?.unwrap();
+	let private_story = get_command_option(options, PRIVATE_STORY_OPTION, true)?.unwrap();
+	let story_theme_1 = get_command_option(options, STORY_THEME_1_OPTION, true)?.unwrap();
+	let story_theme_2 = get_command_option(options, STORY_THEME_2_OPTION, true)?.unwrap();
+	let story_name = get_command_option(options, STORY_NAME_OPTION, true)?.unwrap();
+	let story_description = get_command_option(options, STORY_DESCRIPTION_OPTION, false)
+		.unwrap_or_default()
+		.unwrap();
+
+	// Check if category exists
+	let channels = guild_id
+		.channels(ctx)
+		.await
+		.map_err(|_e| WeaveError::Custom("Failed to get channels".to_string()))?;
+
+	let category_name = format!("{}-stories", story_size);
+
+	let category_id = match channels
+		.iter()
+		.filter(|c| c.1.kind == ChannelType::Category)
+		.find(|c| c.1.name == category_name)
+	{
+		Some(c) => *c.0,
+		None =>
+			guild_id
+				.create_channel(ctx.http.clone(), |c| {
+					c.name(category_name).kind(ChannelType::Category).permissions(vec![])
+				})
+				.await
+				.map_err(|e| WeaveError::Custom(e.to_string()))?
+				.id,
 	};
 
 	guild_id
 		.create_channel(ctx.http.clone(), |c| {
-			c.name(story_name.unwrap())
+			c.name(story_name)
 				.permissions(vec![])
 				.kind(ChannelType::Text)
 				.rate_limit_per_user(10)
-				.category(1234u64)
+				.category(category_id)
 		})
 		.await
-		.map_err(|_e| "Failed to create channel")
 		.map_err(|e| WeaveError::Custom(e.to_string()))?;
 
 	Ok("Created story channel".to_string())
 }
+
+const STORY_SIZE_OPTION: &str = "story-size";
+const HARDCORE_MODE_OPTION: &str = "hardcore-mode";
+const PRIVATE_STORY_OPTION: &str = "private-story";
+const STORY_THEME_1_OPTION: &str = "story-theme-1";
+const STORY_THEME_2_OPTION: &str = "story-theme-2";
+const STORY_NAME_OPTION: &str = "story-name";
+const STORY_DESCRIPTION_OPTION: &str = "story-description";
 
 pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicationCommand {
 	command
@@ -56,7 +82,7 @@ pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicatio
 		.description("Create a new story")
 		.create_option(|option| {
 			option
-				.name("story-size")
+				.name(STORY_SIZE_OPTION)
 				.description("The size and complexity of the story")
 				.kind(CommandOptionType::String)
 				.add_string_choice("Small", "small")
@@ -66,7 +92,7 @@ pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicatio
 		})
 		.create_option(|option| {
 			option
-				.name("hardcore-mode")
+				.name(HARDCORE_MODE_OPTION)
 				.description("Enable or disable hardcore mode")
 				.kind(CommandOptionType::String)
 				.add_string_choice("Yes", "yes")
@@ -75,7 +101,7 @@ pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicatio
 		})
 		.create_option(|option| {
 			option
-				.name("private-story")
+				.name(PRIVATE_STORY_OPTION)
 				.description("Enable or disable private story")
 				.kind(CommandOptionType::String)
 				.add_string_choice("Yes", "yes")
@@ -83,29 +109,29 @@ pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicatio
 				.required(true)
 		})
 		.create_option(|option| {
-			create_theme_option(option, "story-theme-1", "The theme of the story", true)
+			create_theme_option(option, STORY_THEME_1_OPTION, "The theme of the story", true)
 		})
 		.create_option(|option| {
 			create_theme_option(
 				option,
-				"story-theme-2",
+				STORY_THEME_2_OPTION,
 				"Combine two themes for a more complex story",
-				false,
+				true,
 			)
 		})
 		.create_option(|option| {
 			option
-				.name("story-name")
+				.name(STORY_NAME_OPTION)
 				.description("The name of the story")
 				.kind(CommandOptionType::String)
-				.required(false)
+				.required(true)
 		})
 		.create_option(|option| {
 			option
-				.name("story-description")
+				.name(STORY_DESCRIPTION_OPTION)
 				.description("The description of the story")
 				.kind(CommandOptionType::String)
-				.required(false)
+				.required(true)
 		})
 }
 

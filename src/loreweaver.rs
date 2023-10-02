@@ -1,12 +1,16 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+	fmt::{Debug, Display},
+	marker::PhantomData,
+};
 
 use async_openai::{
 	error::OpenAIError,
 	types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role},
 };
+use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use serenity::async_trait;
-use tracing::{info, instrument};
+use tracing::{debug, instrument};
 
 use self::models::{MaxTokens, Models};
 
@@ -14,9 +18,24 @@ pub trait Get<T> {
 	fn get() -> T;
 }
 
+/// A trait representing a unique identifier for a weaving.
+pub trait WeavingID: Debug + Display + Send + Sync + 'static {}
+
 #[async_trait]
-pub trait StorageHandler {
-	async fn get(id: WeavingID) -> Result<Option<StoryPart>, WeaveError>;
+/// A trait representing a storage handler for a specific type of weaving.
+pub trait StorageHandler<Key: WeavingID> {
+	/// Returns the key for a given [`WeavingID`].
+	fn key(weaving_id: &Key) -> String {
+		format!("{weaving_id}")
+	}
+	/// Adds a [`StoryPart`] to storage for a given [`WeavingID`].
+	async fn save_story_part(
+		weaving_id: &Key,
+		story_part: StoryPart,
+		increment: bool,
+	) -> Result<(), WeaveError>;
+	/// Gets the last [`StoryPart`] from storage for a given [`WeavingID`].
+	async fn get_last_story_part(weaving_id: &Key) -> Result<Option<StoryPart>, WeaveError>;
 }
 
 /// A trait consisting mainly of associated types implemented by [`Loreweaver`].
@@ -24,24 +43,19 @@ pub trait StorageHandler {
 /// Normally structs implementing [`crate::Server`] would implement this trait to call methods
 /// implemented by [`Loreweaver`]
 #[async_trait]
+/// A trait representing the configuration for a Loreweaver server.
 pub trait Config {
 	/// Getter for GPT model to use.
 	type Model: Get<Models>;
+	/// Type alias encompassing a server id and a story id.
+	///
+	/// Used mostly for querying some blob storage in the form of a path.
+	type WeavingID: WeavingID;
 	/// Storage handler implementation which is used to store and retrieve story parts.
-	type Storage: StorageHandler;
+	type Storage: StorageHandler<Self::WeavingID>;
 }
-
-/// Encompasses many [`StoryID`]s.
-type ServerID = u128;
-/// The `StoryID` identifies a single story which is part of a [`ServerID`].
-type StoryID = u128;
-/// Type alias encompassing a server id and a story id.
-///
-/// Used mostly for querying some blob storage in the form of a path.
-pub type WeavingID = (ServerID, StoryID);
-
 /// An platform agnostic type representing a user's account ID.
-type AccountId = u64;
+pub type AccountId = u64;
 
 /// Context message that represent a single message in a [`StoryPart`].
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -61,7 +75,7 @@ pub struct ContextMessage {
 /// allowed for the current GPT [`Models`], then we must generate a summary of the current story
 /// part and use that as the starting point for the next story part. This is one of the biggest
 /// challenges for Loreweaver to keep a consistent narrative throughout the many story parts.
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, FromRedisValue, ToRedisArgs, Default, Clone)]
 pub struct StoryPart {
 	/// The story part number.
 	pub number: u16,
@@ -86,7 +100,7 @@ pub struct StoryPart {
 /// The implementations should handle all form of validation and usage tracking all while
 /// abstracting the logic from the services calling them.
 #[async_trait]
-pub trait Loom {
+pub trait Loom<T: Config> {
 	/// Prompt Loreweaver for a response for [`WeavingID`].
 	///
 	/// Prompts ChatGPT with the current [`StoryPart`] and the `msg`.
@@ -95,7 +109,7 @@ pub trait Loom {
 	/// ChatGPT [`Models`] has been reached, a summary will be generated instead of the current
 	/// message history and saved to the cloud. A new message history will begin.
 	async fn prompt(
-		loom_id: WeavingID,
+		weaving_id: T::WeavingID,
 		msg: String,
 		account_id: AccountId,
 		username: String,
@@ -130,14 +144,16 @@ impl<T: Config> Loreweaver<T> {
 #[derive(Debug)]
 pub enum WeaveError {
 	OpenAIError(OpenAIError),
+	// TODO: Do not resort to Custom error unless it is absolutely necessary.
+	// Create new error types for each error case.
 	Custom(String),
 }
 
 #[async_trait]
-impl<T: Config> Loom for Loreweaver<T> {
+impl<T: Config> Loom<T> for Loreweaver<T> {
 	#[instrument]
 	async fn prompt(
-		weaving_id: WeavingID,
+		weaving_id: T::WeavingID,
 		msg: String,
 		_account_id: AccountId,
 		username: String,
@@ -145,83 +161,72 @@ impl<T: Config> Loom for Loreweaver<T> {
 	) -> Result<String, WeaveError> {
 		let model = T::Model::get();
 
-		let story_part = Arc::new(T::Storage::get(weaving_id).await?);
-		let story_part_clone = Arc::clone(&story_part);
+		let mut story_part =
+			T::Storage::get_last_story_part(&weaving_id).await?.unwrap_or_default();
 
-		let context_messages = tokio::spawn(async move {
-			match story_part.as_ref() {
-				Some(part) => {
-					// TODO: Call `Models` to verify that the 80% threshold has not been reached. If
-					// it has been reached, then generate a summary of the current story part and
-					// save it to the next story part.
+		let username_with_nick = match pseudo_username {
+			Some(pseudo_username) => format!("{}{}", username, pseudo_username),
+			None => username,
+		};
 
-					part.context_messages
-						.iter()
-						.map(|msg: &ContextMessage| {
-							Ok(ChatCompletionRequestMessageArgs::default()
-								.content(msg.content.clone())
-								.role(match msg.role.as_str() {
-									"system" => Role::System,
-									"assistant" => Role::Assistant,
-									"user" => Role::User,
-									_ =>
-										return Err(WeaveError::Custom(format!(
-											"Invalid role: {}",
-											msg.role
-										))),
-								})
-								.name(msg.username.as_deref().unwrap_or_default())
-								.build()
-								.unwrap())
-						})
-						.collect::<Result<Vec<ChatCompletionRequestMessage>, WeaveError>>()
-				},
-				None => Ok(vec![]),
-			}
-			.unwrap_or_default()
+		story_part.context_messages.push(ContextMessage {
+			role: "user".to_string(),
+			account_id: None,
+			username: Some(username_with_nick.clone()),
+			content: msg.clone(),
+			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
 
-		let max_words = tokio::spawn(async move {
-			Loreweaver::<T>::max_words(
-				model,
-				None,
-				match story_part_clone.as_ref() {
-					Some(part) => part.context_tokens,
-					None => 0,
-				},
-			)
-		});
+		let mut request_messages: Vec<ChatCompletionRequestMessage> = story_part
+			.context_messages
+			.iter()
+			.map(|msg: &ContextMessage| {
+				ChatCompletionRequestMessageArgs::default()
+					.content(msg.content.clone())
+					.role(match msg.role.as_str() {
+						"system" => Role::System,
+						"assistant" => Role::Assistant,
+						"user" => Role::User,
+						_ => Err(WeaveError::Custom("Invalid role".into())).unwrap(),
+					})
+					.name(match msg.role.as_str() {
+						"system" => "Loreweaver",
+						"assistant" => "Loreweaver", // TODO: This should be the NPC...
+						"user" => username_with_nick.as_str(),
+						_ => Err(WeaveError::Custom("Invalid role".into())).unwrap(),
+					})
+					.build()
+					.unwrap()
+			})
+			.collect::<Vec<ChatCompletionRequestMessage>>();
 
-		let mut context_messages = context_messages.await.map_err(|_e| {
-			WeaveError::Custom("Failed to complete context messages thread exection".into())
-		})?;
+		let max_words = Loreweaver::<T>::max_words(model, None, story_part.context_tokens);
 
-		context_messages.extend(
-			vec![ChatCompletionRequestMessageArgs::default()
-				.role(Role::User)
-				.content(msg)
-				.name(format!("{}{}", username, pseudo_username.unwrap_or_default()))
-				.build()
-				.map_err(|err| {
-					return Err::<String, WeaveError>(WeaveError::Custom(err.to_string()))
-				})
-				.expect("Failed to build ChatCompletionRequestMessage")]
-			.into_iter(),
-		);
-
-		info!("Prompting ChatGPT...");
+		debug!("Prompting ChatGPT...");
 
 		match <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
 			Models::GPT4,
-			&mut context_messages,
-			max_words.await.map_err(|_e| {
-				WeaveError::Custom("Failed to complete max words thread exection".into())
-			})?,
+			&mut request_messages,
+			max_words,
 		)
 		.await
 		{
 			Ok(res) => Ok(match res.choices[0].clone().message.content {
-				Some(content) => content,
+				Some(content) => {
+					story_part.context_messages.push(ContextMessage {
+						role: "assistant".to_string(),
+						account_id: None,
+						username: None,
+						content: content.clone(),
+						timestamp: chrono::Utc::now().to_rfc3339(),
+					});
+
+					debug!("Saving story part: {:?}", story_part.context_messages);
+
+					T::Storage::save_story_part(&weaving_id, story_part, false).await?;
+
+					content
+				},
 				None =>
 					return Err(WeaveError::Custom("Failed to get content from response".into())),
 			}),
@@ -236,7 +241,7 @@ pub mod models {
 	pub type MaxTokens = u128;
 
 	/// The ChatGPT language models that are available to use.
-	#[derive(PartialEq, Eq, Clone, Debug)]
+	#[derive(PartialEq, Eq, Clone, Debug, Copy)]
 	pub enum Models {
 		GPT3,
 		GPT4,

@@ -2,21 +2,43 @@ use core::panic;
 use serenity::{
 	async_trait,
 	http::Http,
-	model::prelude::{command::Command, interaction::Interaction, Ready},
+	model::prelude::{command::Command, interaction::Interaction, Message, Ready},
 	prelude::{Context, EventHandler, GatewayIntents},
 	Client,
 };
-use std::env;
+use std::{env, fmt::Display};
 use tokio::time::Instant;
 use tracing::{error, event, info, instrument, Level};
 
 use crate::{
-	loreweaver::{Config, Loom, Loreweaver},
+	loreweaver::{self, Config, Loom, Loreweaver},
 	storage::Storage,
 	GPTModel, Server,
 };
 
 mod commands;
+
+/// Encompasses many [`StoryID`]s.
+type ServerID = u64;
+/// The `StoryID` identifies a single story which is part of a [`ServerID`].
+type StoryID = u64;
+/// Type alias encompassing a server id and a story id.
+///
+/// Used mostly for querying some blob storage in the form of a path.
+#[derive(Debug)]
+pub struct WeavingID {
+	pub server_id: ServerID,
+	pub story_id: StoryID,
+}
+
+// TODO: Figure out how to get around this.
+impl loreweaver::WeavingID for WeavingID {}
+
+impl Display for WeavingID {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}:{}", self.server_id, self.story_id)
+	}
+}
 
 #[derive(Default, Debug)]
 pub struct DiscordBot;
@@ -24,9 +46,10 @@ pub struct DiscordBot;
 impl Config for DiscordBot {
 	type Model = GPTModel;
 	type Storage = Storage;
+	type WeavingID = WeavingID;
 }
 
-impl<T: Loom> Server<T> for DiscordBot {
+impl Server for DiscordBot {
 	#[instrument]
 	async fn serve() {
 		// Configure the client with your Discord bot token in the environment.
@@ -90,22 +113,9 @@ impl EventHandler for DiscordBot {
 			Interaction::ApplicationCommand(command) => {
 				let start = Instant::now();
 
-				// Enables bot "typing..." in discord
+				// Start bot "typing..." in discord
 				if let Err(err) = command.defer(&ctx.http).await {
 					error!("Cannot defer command: {err:?}");
-					return
-				}
-
-				if let Err(e) = Loreweaver::<Self>::prompt(
-					(100, 101),
-					"Hello Loreweaver!".to_string(),
-					12345,
-					command.user.clone().name,
-					command.user.nick_in(&ctx, command.guild_id.unwrap()).await,
-				)
-				.await
-				{
-					error!("Cannot prompt loreweaver: {e:?}");
 					return
 				}
 
@@ -141,5 +151,80 @@ impl EventHandler for DiscordBot {
 			},
 			_ => {},
 		}
+	}
+
+	// Set a handler for the `message` event - so that whenever a new message
+	// is received - the closure (or function) passed will be called.
+	//
+	// Event handlers are dispatched through a threadpool, and so multiple
+	// events can be dispatched simultaneously.
+	#[instrument(skip(self, ctx), fields(time_to_completion))]
+	async fn message(&self, ctx: Context, msg: Message) {
+		// Ignore messages from self
+		if msg.author.bot {
+			return
+		}
+
+		let category_channel = match msg.channel_id.to_channel(&ctx).await {
+			Ok(channel) => match channel.guild().map(|guild_channel| guild_channel.parent_id) {
+				Some(Some(parent_id)) =>
+					Some(parent_id.to_channel(&ctx).await.unwrap().category().unwrap()),
+				_ => None,
+			},
+			Err(_) => None,
+		};
+
+		// validate that the category is the Stories category
+		match category_channel {
+			Some(category_channel) => {
+				const VALID_CHANNEL_NAMES: [&str; 3] =
+					["small-stories", "medium-stories", "large-stories"];
+
+				if !VALID_CHANNEL_NAMES.contains(&category_channel.name.as_str()) {
+					error!("Channel is not in the Stories category");
+					return
+				}
+			},
+			None => {
+				error!("Channel is not in a category");
+				return
+			},
+		}
+
+		let start = Instant::now();
+
+		let typing = match msg.channel_id.start_typing(&ctx.http) {
+			Ok(typing) => typing,
+			Err(_) => {
+				error!("Failed to start typing");
+				return
+			},
+		};
+
+		let content = match Loreweaver::<Self>::prompt(
+			WeavingID { server_id: msg.guild_id.unwrap().0, story_id: msg.channel_id.0 },
+			msg.content.clone(),
+			12345,
+			msg.author.clone().name,
+			msg.author.nick_in(&ctx, msg.guild_id.unwrap()).await,
+		)
+		.await
+		{
+			Ok(c) => c,
+			Err(e) => {
+				error!("Cannot prompt loreweaver: {e:?}");
+				return
+			},
+		};
+
+		if let Err(err) = msg.channel_id.say(&ctx.http, content).await {
+			error!("Cannot send message: {err:?}");
+		}
+
+		let _ = typing.stop();
+
+		info!("Command executed in {} seconds", start.elapsed().as_secs());
+
+		tracing::Span::current().record("time_to_completion", start.elapsed().as_secs());
 	}
 }

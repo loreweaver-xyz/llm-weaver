@@ -24,3 +24,10 @@ tracing-subscriber = "0.3.17"
 google-cloud-storage = "0.13.1"
 serde_json = "1.0.107"
 serde = { version = "1.0.188", features = ["derive"] }
+redis = { version = "0.23.3", features = [
+    "tokio-comp",
+    "tokio-rustls-comp",
+    "json",
+] }
+chrono = "0.4.31"
+redis-macros = "0.2.1"

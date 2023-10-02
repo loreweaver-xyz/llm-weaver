@@ -10,6 +10,31 @@ use tracing::{error, instrument};
 
 use crate::loreweaver::WeaveError;
 
+pub fn get_command_option(
+	options: &Vec<CommandDataOption>,
+	option: &str,
+	required: bool,
+) -> Result<Option<String>, WeaveError> {
+	options
+		.iter()
+		.find(|o| o.name == option)
+		.map(|o| match extract_string_option_value(o) {
+			Some(value) => Ok(Some(value)),
+			None =>
+				if required {
+					Err(WeaveError::Custom(format!("Option {} is required", option)))
+				} else {
+					Ok(None)
+				},
+		})
+		.unwrap_or_else(|| {
+			if required {
+				Err(WeaveError::Custom(format!("Option {} is required", option)))
+			} else {
+				Ok(None)
+			}
+		})
+}
 pub fn extract_string_option_value(option: &CommandDataOption) -> Option<String> {
 	match option.resolved.as_ref().unwrap() {
 		CommandDataOptionValue::String(value) => Some(value.clone()),
