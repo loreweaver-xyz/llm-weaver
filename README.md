@@ -1,68 +1,93 @@
-# Loreweaver - An Interactive Storytelling Bot
+# Loreweaver Library
 
-Loreweaver is a text-based RPG (Role Playing Game) bot written in Rust, designed to weave intricate stories for a group of players over Discord or Web. By interacting with ChatGPT, Loreweaver crafts a rich narrative where players can join together on an adventure, playing as their own unique characters.
+Loreweaver is a robust library designed to interact with models like ChatGPT, with an emphasis on managing, saving, and tracking message histories over the course of multiple interactions, ensuring a continuous and coherent user experience.
 
-## Features
+> Check out the official [Loreweaver Discord Bot](https://github.com/snowmead/loreweaver-discord-bot) purpously built based on this library!
 
-- **Engaging Story Crafting**: Develops unique story scenarios to maintain player interest and excitement.
-- **Role-playing NPCs**: Provides dialogue and interaction for the non-player characters, tracking their roles within the story.
-- **Rich Descriptions**: Describes environments, characters, and events in detail, immersing players in a detailed game world.
-- **Twists and Challenges**: Stimulates players' problem-solving skills and imagination with unexpected twists, complex dilemmas, and unique challenges.
-- **Player Choice Empowerment**: Allows players to engage in dialogue and respond to NPCs or enemies without speaking on their behalf.
-- **Collaboration Encouragement**: Fosters deeper relationships with well-developed NPCs, enriching interactions and emotional connections.
-- **Compelling Story Maintenance**: Enhances the depth and variety of the story experience with a wide range of emotional tones.
+## Use Cases
 
-## Guidelines
+- **Text-Based RPGs:** Crafting coherent and persistently evolving narratives and interactions in text-based role-playing games.
 
-- **Story Initiation**: Starts the story once at least one player has joined.
-- **Markdown Formatting**: Uses markdown to format messages for emphasizing important information and readability.
-- **Player Autonomy**: Never speaks on behalf of the players; allows them to speak for themselves.
-- **Character Naming**: Always refers to the players by their character names within the context of the story.
-- **Safe Environment**: Prohibits NSFW content, hate speech, and discussions of illegal activities.
-- **Story Breadcrumbs**: Creates story breadcrumbs to guide players through the story and help them make decisions.
+- **Customer Support Chatbots:** Developing chatbots that remember past user interactions and provide personalized support.
 
-## Hardcore Mode
+- **Educational Virtual Tutors:** Implementing AI tutors that remember student interactions and tailor assistance accordingly.
 
-- **Player Mortality**: Players can be killed or die, and cannot return to the game (they can join later with a different character).
-- **PVP Combat**: Enjoyable and fair PVP combat; no consent needed.
-- **Unfairness**: Unfairness is allowed in the game dynamics.
-- **PVP Consent**: Does not ask the players if they wish to avoid PVP between each other.
+- **Healthcare Virtual Assistants:** Creating healthcare assistants that provide follow-up advice and reminders based on past user health queries.
 
-## Story Size Criteria
+- **AI-Driven MMO NPC Interactions:** Enhancing MMO experiences by enabling NPCs to have contextually relevant interactions with players based on past encounters.
 
-- **Small Story**:
-  - Single, self-contained clear quest/objective.
-  - Limited NPCs, locations, and challenges for a concise story.
-  - Straightforward story completed within a short time frame.
-  - Focus on player interactions and quick decision-making.
+## Main Components
 
-- **Medium Story**:
-  - Multi-layered story with interconnected quests/objectives.
-  - Moderate number of NPCs, locations, and challenges for depth and variety.
-  - Complex story allowing for character growth and evolving storylines.
-  - Encourages deeper collaboration and decision-making among players.
+### `trait Config`
 
-- **Large Story**:
-  - Expansive game world with multiple story arcs and diverse quests/objectives.
-  - Vast array of NPCs, locations, and challenges for a rich and varied experience.
-  - Intricate story with interconnected storylines and character development opportunities.
-  - Extensive collaboration, planning, and decision-making among players to navigate story complexity.
+The `Config` trait is vital for declaring application-specific configuration parameters, which serve as the entry point for all applications leveraging the Loreweaver library. Implementing this trait enables the user to define specific configurations such as the GPT `Model` to use and specific `WeavingID` - which is used for identifying and managing weaving (story/dialogue) instances.
 
-## Getting Started
+Example:
 
-1. Clone the repository:
-```bash
-git clone https://github.com/your-username/loreweaver.git
+```rust
+pub trait Config {
+    /// Getter for GPT model to use.
+    type Model: Get<Models>;
+    /// Type alias encompassing a server id and a story id.
+    type WeavingID: WeavingID;
+}
 ```
-2. Navigate to the project directory:
-```bash
-cd loreweaver
+
+### `trait Loom`
+
+The `Loom` trait defines the core functionality of interacting with the loreweaver library via the `prompt`` method, which is core of the implementation.
+
+Upon calling `Loom::prompt`, if successful, it will interact perform the following operations:
+
+1. Get current story
+2. Inject system instructions and other utility system messages
+3. Prompt ChatGPT
+4. Append the response to the story and save to Redis instance (ran by the application developer)
+5. Return the response
+
+Applications can implement additional features, such as charging users based on API usage, or proceeding with further interactions.
+
+## Example Usage
+
+```rust
+use loreweaver::{Config, WeavingID, Models};
+
+struct MyConfig;
+
+impl Config for MyConfig {
+    type Model = Models::GPT4;
+    type WeavingID = MyWeavingID;
+}
+
+struct MyWeavingID(String);
+
+impl WeavingID for MyWeavingID {
+    fn base_key(&self) -> String {
+        self.0.clone()
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let weaving_id = MyWeavingID("my_weaving_1".into());
+    let response = Loreweaver::<MyConfig>.prompt(
+        "system instructions".into(),
+        weaving_id,
+        "hello loreweaver!".into(),
+        1234,
+        "username".into(),
+        None,
+    )
+    .await
+    .unwrap();
+    println!("Received response: {}", response);
+}
 ```
-3. Build the project:
-```bash
-cargo build --release
-```
-4. Run Loreweaver:
-```bash
-./target/release/loreweaver gpt4 --run-as discord
-```
+
+## Contribution
+
+If you are passioniate about this project, please feel free to fork the repository and submit pull requests for enhancements, bug fixes, or additional features.
+
+## License
+
+Loreweaver is distributed under the MIT License, ensuring maximum freedom for using and sharing it in your projects.
