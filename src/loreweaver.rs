@@ -213,30 +213,50 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
 
-		let mut request_messages: Vec<ChatCompletionRequestMessage> = story_part
-			.context_messages
-			.iter()
-			.map(|msg: &ContextMessage| {
-				ChatCompletionRequestMessageArgs::default()
-					.content(msg.content.clone())
-					.role(Into::<WrapperRole>::into(msg.role.clone()))
-					.name(match msg.role.as_str() {
-						"system" => "Loreweaver",
-						"assistant" => "Loreweaver", // TODO: This should be the NPC...
-						"user" => username_with_nick.as_str(),
-						_ => Err(WeaveError::BadOpenAIRole).unwrap(),
-					})
-					.build()
-					.unwrap()
+		let system = std::fs::read_to_string("./loreweaver-systems/rpg-small-system.txt")
+			.map_err(|e| {
+				error!("Failed to read ./loreweaver-systems/rpg-small-system.txt: {e:?}");
+				panic!()
 			})
-			.collect::<Vec<ChatCompletionRequestMessage>>();
+			.unwrap();
 
-		let max_words = Loreweaver::<T>::max_words(model, None, story_part.context_tokens as u128);
+		// Add the system to the beginning of the message history
+		let mut request_messages = vec![ChatCompletionRequestMessageArgs::default()
+			.role(Role::System)
+			.content(system)
+			.build()
+			.map_err(|e| {
+				error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
+				LoomError::Loreweaver(WeaveError::FailedPromptOpenAI)
+			})?
+			.into()];
+
+		request_messages.extend(
+			story_part
+				.context_messages
+				.iter()
+				.map(|msg: &ContextMessage| {
+					ChatCompletionRequestMessageArgs::default()
+						.content(msg.content.clone())
+						.role(Into::<WrapperRole>::into(msg.role.clone()))
+						.name(match msg.role.as_str() {
+							"system" => "Loreweaver",
+							"assistant" | "user" => username_with_nick.as_str(),
+							_ => Err(WeaveError::BadOpenAIRole).unwrap(),
+						})
+						.build()
+						.unwrap()
+				})
+				.collect::<Vec<ChatCompletionRequestMessage>>(),
+		);
+
+		let max_response_words =
+			Loreweaver::<T>::max_words(model, None, story_part.context_tokens as u128);
 
 		let res = <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
 			Models::GPT4,
-			&mut request_messages,
-			max_words,
+			request_messages,
+			max_response_words,
 		)
 		.await
 		.map_err(|e| {
@@ -244,7 +264,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			LoomError::Loreweaver(WeaveError::FailedPromptOpenAI)
 		})?;
 
-		let content = res.choices[0]
+		let response_content = res.choices[0]
 			.clone()
 			.message
 			.content
@@ -254,7 +274,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			role: "assistant".to_string(),
 			account_id: None,
 			username: None,
-			content: content.clone(),
+			content: response_content.clone(),
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
 
@@ -265,7 +285,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			LoomError::Storage(e)
 		})?;
 
-		Ok(content)
+		Ok(response_content)
 	}
 }
 
@@ -333,56 +353,31 @@ mod secret_lore {
 		config::OpenAIConfig,
 		error::OpenAIError,
 		types::{
-			ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs,
-			CreateChatCompletionRequestArgs, CreateChatCompletionResponse, Role,
+			ChatCompletionRequestMessage, CreateChatCompletionRequestArgs,
+			CreateChatCompletionResponse,
 		},
 	};
 	use lazy_static::lazy_static;
 	use tiktoken_rs::p50k_base;
 	use tokio::sync::RwLock;
-	use tracing::error;
 
 	use super::{
 		models::{MaxTokens, Models},
 		Config,
 	};
 
-	/// Loreweaver system instructions with number of ChatGPT tokens.
-	type System = (String, u128);
-
 	lazy_static! {
 		/// The OpenAI client to interact with the OpenAI API.
 		static ref OPENAI_CLIENT: RwLock<async_openai::Client<OpenAIConfig>> = RwLock::new(async_openai::Client::new());
-
-		/// Loreweaver System instructions
-		static ref LOREWEAVER_SYSTEM: RwLock<System> = {
-			let system = std::fs::read_to_string("./loreweaver-systems/rpg-small-system.txt").map_err(|e| {
-				error!("Failed to read ./loreweaver-systems/rpg-small-system.txt: {e:?}");
-				panic!()
-			}).unwrap();
-
-			let tokens = system.count_tokens();
-
-			RwLock::new((system, tokens))
-		};
 	}
 
 	pub trait Sealed<T: Config> {
 		/// The action to query ChatGPT with the supplied configurations and messages.
 		async fn do_prompt(
 			model: Models,
-			msgs: &mut Vec<ChatCompletionRequestMessage>,
+			msgs: Vec<ChatCompletionRequestMessage>,
 			_max_words: MaxTokens,
 		) -> Result<CreateChatCompletionResponse, OpenAIError> {
-			// Add the system to the beginning of the message history
-			msgs.splice(
-				0..0,
-				[ChatCompletionRequestMessageArgs::default()
-					.role(Role::System)
-					.content(LOREWEAVER_SYSTEM.read().await.clone().0)
-					.build()?],
-			);
-
 			let request = CreateChatCompletionRequestArgs::default()
 				// TODO: use `_max_words` to limit the number of words in the response. ChatGPT does
 				// not  make a coherent response while respecting the max_tokens() limit.
