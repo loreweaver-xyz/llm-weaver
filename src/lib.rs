@@ -1,4 +1,5 @@
 #![feature(async_fn_in_trait)]
+#![feature(async_closure)]
 
 use std::{
 	fmt::{Debug, Display},
@@ -8,12 +9,14 @@ use std::{
 use async_openai::types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role};
 use serde::{Deserialize, Serialize};
 use serenity::async_trait;
+use storage::StorageError;
 use tracing::{debug, error, instrument};
-use types::SystemCategory;
+
+use crate::storage::Storage;
 
 use self::models::{MaxTokens, Models};
 
-pub mod types;
+mod storage;
 
 pub trait Get<T> {
 	fn get() -> T;
@@ -56,8 +59,6 @@ pub trait Config {
 	///
 	/// Used mostly for querying some blob storage in the form of a path.
 	type WeavingID: WeavingID;
-	/// Storage handler implementation which is used to store and retrieve story parts.
-	type Storage: StorageHandler<Self::WeavingID>;
 }
 /// An platform agnostic type representing a user's account ID.
 pub type AccountId = u64;
@@ -112,20 +113,13 @@ pub trait Loom<T: Config> {
 	/// ChatGPT [`Models`] has been reached, a summary will be generated instead of the current
 	/// message history and saved to the cloud. A new message history will begin.
 	async fn prompt(
-		system_category: SystemCategory,
+		system: String,
 		weaving_id: T::WeavingID,
 		msg: String,
 		account_id: AccountId,
 		username: String,
 		pseudo_username: Option<String>,
-	) -> Result<String, LoomError<T>>;
-}
-
-/// Overarching error type for Loreweaver.
-#[derive(Debug)]
-pub enum LoomError<T: Config> {
-	Loreweaver(WeaveError),
-	Storage(<T::Storage as StorageHandler<T::WeavingID>>::Error),
+	) -> Result<String, WeaveError>;
 }
 
 /// The bread & butter of Loreweaver.
@@ -160,6 +154,8 @@ pub enum WeaveError {
 	FailedToGetContent,
 	/// A bad OpenAI role was supplied.
 	BadOpenAIRole,
+	/// Storage error.
+	Storage(StorageError),
 }
 
 /// Wrapper around [`async_openai::types::types::Role`] for custom implementation.
@@ -190,20 +186,20 @@ impl From<String> for WrapperRole {
 impl<T: Config> Loom<T> for Loreweaver<T> {
 	#[instrument]
 	async fn prompt(
-		system_category: SystemCategory,
+		system: String,
 		weaving_id: T::WeavingID,
 		msg: String,
 		_account_id: AccountId,
 		username: String,
 		pseudo_username: Option<String>,
-	) -> Result<String, LoomError<T>> {
+	) -> Result<String, WeaveError> {
 		let model = T::Model::get();
 
-		let mut story_part = T::Storage::get_last_story_part(&weaving_id)
+		let mut story_part = Storage::get_last_story_part(&weaving_id)
 			.await
 			.map_err(|e| {
 				error!("Failed to get last story part: {}", e);
-				LoomError::Storage(e)
+				WeaveError::Storage(e)
 			})?
 			.unwrap_or_default();
 
@@ -220,21 +216,6 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
 
-		let system_category_str = <SystemCategory as Into<String>>::into(system_category);
-
-		let system =
-			std::fs::read_to_string(format!("./loreweaver-systems/{}.txt", system_category_str))
-				.map_err(|e| {
-					error!(
-						"Failed to read ./loreweaver-systems/{}.txt: {}",
-						system_category_str, e
-					);
-					panic!()
-				})
-				.unwrap();
-
-		debug!("Loreweaver category system loaded: {}", system_category_str);
-
 		// Add the system to the beginning of the message history
 		let mut request_messages = vec![ChatCompletionRequestMessageArgs::default()
 			.role(Role::System)
@@ -242,7 +223,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			.build()
 			.map_err(|e| {
 				error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
-				LoomError::Loreweaver(WeaveError::FailedPromptOpenAI)
+				WeaveError::FailedPromptOpenAI
 			})?
 			.into()];
 
@@ -276,14 +257,11 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		.await
 		.map_err(|e| {
 			error!("Failed to prompt ChatGPT: {}", e);
-			LoomError::Loreweaver(WeaveError::FailedPromptOpenAI)
+			WeaveError::FailedPromptOpenAI
 		})?;
 
-		let response_content = res.choices[0]
-			.clone()
-			.message
-			.content
-			.ok_or(LoomError::Loreweaver(WeaveError::FailedToGetContent))?;
+		let response_content =
+			res.choices[0].clone().message.content.ok_or(WeaveError::FailedToGetContent)?;
 
 		story_part.context_messages.push(ContextMessage {
 			role: "assistant".to_string(),
@@ -295,9 +273,9 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 
 		debug!("Saving story part: {:?}", story_part.context_messages);
 
-		T::Storage::save_story_part(&weaving_id, story_part, false).await.map_err(|e| {
+		Storage::save_story_part(&weaving_id, story_part, false).await.map_err(|e| {
 			error!("Failed to save story part: {}", e);
-			LoomError::Storage(e)
+			WeaveError::Storage(e)
 		})?;
 
 		Ok(response_content)

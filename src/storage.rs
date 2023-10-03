@@ -5,7 +5,7 @@ use serenity::async_trait;
 use tokio::sync::OnceCell;
 use tracing::{debug, error, instrument};
 
-use crate::loreweaver::{AccountId, ContextMessage, StorageHandler, StoryPart, WeavingID};
+use crate::{AccountId, ContextMessage, StorageHandler, StoryPart, WeavingID};
 
 /// Storage client to access GCP Storage
 static REDIS_CLIENT: OnceCell<Client> = OnceCell::const_new();
