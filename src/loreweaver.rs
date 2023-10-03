@@ -3,13 +3,10 @@ use std::{
 	marker::PhantomData,
 };
 
-use async_openai::{
-	error::OpenAIError,
-	types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role},
-};
+use async_openai::types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role};
 use serde::{Deserialize, Serialize};
 use serenity::async_trait;
-use tracing::{debug, instrument};
+use tracing::{debug, error, instrument};
 
 use self::models::{MaxTokens, Models};
 
@@ -24,16 +21,21 @@ pub trait WeavingID: Debug + Display + Send + Sync + 'static {
 }
 
 #[async_trait]
-/// A trait representing a storage handler for a specific type of weaving.
+/// Specification for a storage handler.
+///
+/// The implementation of this trait is used to store and retrieve story parts.
 pub trait StorageHandler<Key: WeavingID> {
+	/// The error type for the storage handler.
+	type Error: Display + Debug;
+
 	/// Adds a [`StoryPart`] to storage for a given [`WeavingID`].
 	async fn save_story_part(
 		weaving_id: &Key,
 		story_part: StoryPart,
 		increment: bool,
-	) -> Result<(), WeaveError>;
+	) -> Result<(), Self::Error>;
 	/// Gets the last [`StoryPart`] from storage for a given [`WeavingID`].
-	async fn get_last_story_part(weaving_id: &Key) -> Result<Option<StoryPart>, WeaveError>;
+	async fn get_last_story_part(weaving_id: &Key) -> Result<Option<StoryPart>, Self::Error>;
 }
 
 /// A trait consisting mainly of associated types implemented by [`Loreweaver`].
@@ -110,7 +112,13 @@ pub trait Loom<T: Config> {
 		account_id: AccountId,
 		username: String,
 		pseudo_username: Option<String>,
-	) -> Result<String, WeaveError>;
+	) -> Result<String, LoomError<T>>;
+}
+
+#[derive(Debug)]
+pub enum LoomError<T: Config> {
+	Loreweaver(WeaveError),
+	Storage(<T::Storage as StorageHandler<T::WeavingID>>::Error),
 }
 
 /// The bread & butter of Loreweaver.
@@ -139,10 +147,12 @@ impl<T: Config> Loreweaver<T> {
 
 #[derive(Debug)]
 pub enum WeaveError {
-	OpenAIError(OpenAIError),
-	// TODO: Do not resort to Custom error unless it is absolutely necessary.
-	// Create new error types for each error case.
-	Custom(String),
+	/// Failed to prompt OpenAI.
+	FailedPromptOpenAI,
+	/// Failed to get content from OpenAI response.
+	FailedToGetContent,
+	/// A bad OpenAI role was supplied.
+	BadOpenAIRole,
 }
 
 #[async_trait]
@@ -154,11 +164,16 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		_account_id: AccountId,
 		username: String,
 		pseudo_username: Option<String>,
-	) -> Result<String, WeaveError> {
+	) -> Result<String, LoomError<T>> {
 		let model = T::Model::get();
 
-		let mut story_part =
-			T::Storage::get_last_story_part(&weaving_id).await?.unwrap_or_default();
+		let mut story_part = T::Storage::get_last_story_part(&weaving_id)
+			.await
+			.map_err(|e| {
+				error!("Failed to get last story part: {}", e);
+				LoomError::Storage(e)
+			})?
+			.unwrap_or_default();
 
 		let username_with_nick = match pseudo_username {
 			Some(pseudo_username) => format!("{}{}", username, pseudo_username),
@@ -183,13 +198,13 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 						"system" => Role::System,
 						"assistant" => Role::Assistant,
 						"user" => Role::User,
-						_ => Err(WeaveError::Custom("Invalid role".into())).unwrap(),
+						_ => Err(WeaveError::BadOpenAIRole).unwrap(),
 					})
 					.name(match msg.role.as_str() {
 						"system" => "Loreweaver",
 						"assistant" => "Loreweaver", // TODO: This should be the NPC...
 						"user" => username_with_nick.as_str(),
-						_ => Err(WeaveError::Custom("Invalid role".into())).unwrap(),
+						_ => Err(WeaveError::BadOpenAIRole).unwrap(),
 					})
 					.build()
 					.unwrap()
@@ -198,36 +213,39 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 
 		let max_words = Loreweaver::<T>::max_words(model, None, story_part.context_tokens as u128);
 
-		debug!("Prompting ChatGPT...");
-
-		match <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
+		let res = <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
 			Models::GPT4,
 			&mut request_messages,
 			max_words,
 		)
 		.await
-		{
-			Ok(res) => Ok(match res.choices[0].clone().message.content {
-				Some(content) => {
-					story_part.context_messages.push(ContextMessage {
-						role: "assistant".to_string(),
-						account_id: None,
-						username: None,
-						content: content.clone(),
-						timestamp: chrono::Utc::now().to_rfc3339(),
-					});
+		.map_err(|e| {
+			error!("Failed to prompt ChatGPT: {}", e);
+			LoomError::Loreweaver(WeaveError::FailedPromptOpenAI)
+		})?;
 
-					debug!("Saving story part: {:?}", story_part.context_messages);
+		let content = res.choices[0]
+			.clone()
+			.message
+			.content
+			.ok_or(LoomError::Loreweaver(WeaveError::FailedToGetContent))?;
 
-					T::Storage::save_story_part(&weaving_id, story_part, false).await?;
+		story_part.context_messages.push(ContextMessage {
+			role: "assistant".to_string(),
+			account_id: None,
+			username: None,
+			content: content.clone(),
+			timestamp: chrono::Utc::now().to_rfc3339(),
+		});
 
-					content
-				},
-				None =>
-					return Err(WeaveError::Custom("Failed to get content from response".into())),
-			}),
-			Err(err) => Err(WeaveError::OpenAIError(err)),
-		}
+		debug!("Saving story part: {:?}", story_part.context_messages);
+
+		T::Storage::save_story_part(&weaving_id, story_part, false).await.map_err(|e| {
+			error!("Failed to save story part: {}", e);
+			LoomError::Storage(e)
+		})?;
+
+		Ok(content)
 	}
 }
 
@@ -317,9 +335,9 @@ mod secret_lore {
 		static ref OPENAI_CLIENT: RwLock<async_openai::Client<OpenAIConfig>> = RwLock::new(async_openai::Client::new());
 
 		/// Loreweaver System instructions
-		pub static ref LOREWEAVER_SYSTEM: RwLock<System> = {
-			let system = std::fs::read_to_string("loreweaver-system.txt").map_err(|e| {
-				error!("Failed to read loreweaver-system.txt: {e:?}");
+		static ref LOREWEAVER_SYSTEM: RwLock<System> = {
+			let system = std::fs::read_to_string("./loreweaver-systems/rpg-small-system.txt").map_err(|e| {
+				error!("Failed to read ./loreweaver-systems/rpg-small-system.txt: {e:?}");
 				panic!()
 			}).unwrap();
 

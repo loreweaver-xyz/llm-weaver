@@ -5,33 +5,30 @@ use serenity::{
 	},
 	prelude::Context,
 };
-
-use crate::loreweaver::WeaveError;
+use tracing::error;
 
 use super::utilities::get_command_option;
 
 pub async fn run(
 	ctx: &Context,
 	command: &ApplicationCommandInteraction,
-) -> Result<String, WeaveError> {
+) -> Result<String, serenity::Error> {
 	let guild_id = &command.guild_id.unwrap();
 	let options = &command.data.options;
 
-	let story_size = get_command_option(options, STORY_SIZE_OPTION, true)?.unwrap();
-	let _hardcore_mode = get_command_option(options, HARDCORE_MODE_OPTION, true)?.unwrap();
-	let _private_story = get_command_option(options, PRIVATE_STORY_OPTION, true)?.unwrap();
-	let _story_theme_1 = get_command_option(options, STORY_THEME_1_OPTION, true)?.unwrap();
-	let _story_theme_2 = get_command_option(options, STORY_THEME_2_OPTION, true)?.unwrap();
-	let story_name = get_command_option(options, STORY_NAME_OPTION, true)?.unwrap();
-	let _story_description = get_command_option(options, STORY_DESCRIPTION_OPTION, false)
-		.unwrap_or_default()
-		.unwrap();
+	let story_size = get_command_option(options, STORY_SIZE_OPTION)?.unwrap();
+	let _hardcore_mode = get_command_option(options, HARDCORE_MODE_OPTION)?.unwrap();
+	let _private_story = get_command_option(options, PRIVATE_STORY_OPTION)?.unwrap();
+	let _story_theme_1 = get_command_option(options, STORY_THEME_1_OPTION)?.unwrap();
+	let _story_theme_2 = get_command_option(options, STORY_THEME_2_OPTION)?.unwrap();
+	let story_name = get_command_option(options, STORY_NAME_OPTION)?.unwrap();
+	let _story_description = get_command_option(options, STORY_DESCRIPTION_OPTION).unwrap();
 
 	// Check if category exists
-	let channels = guild_id
-		.channels(ctx)
-		.await
-		.map_err(|_e| WeaveError::Custom("Failed to get channels".to_string()))?;
+	let channels = guild_id.channels(ctx).await.map_err(|e| {
+		error!("Failed to get channels: {}", e);
+		e
+	})?;
 
 	let category_name = format!("{}-stories", story_size);
 
@@ -47,7 +44,10 @@ pub async fn run(
 					c.name(category_name).kind(ChannelType::Category).permissions(vec![])
 				})
 				.await
-				.map_err(|e| WeaveError::Custom(e.to_string()))?
+				.map_err(|e| {
+					error!("Failed to create category: {}", e);
+					e
+				})?
 				.id,
 	};
 
@@ -60,7 +60,10 @@ pub async fn run(
 				.category(category_id)
 		})
 		.await
-		.map_err(|e| WeaveError::Custom(e.to_string()))?;
+		.map_err(|e| {
+			error!("Failed to create story channel: {}", e);
+			e
+		})?;
 
 	Ok("Created story channel".to_string())
 }

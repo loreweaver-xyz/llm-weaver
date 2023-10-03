@@ -32,6 +32,7 @@ impl Display for WeavingID {
 	}
 }
 
+#[derive(Default, Debug)]
 pub struct ApiService;
 
 impl Config for ApiService {
@@ -50,6 +51,7 @@ impl Server for ApiService {
 			Some("Snowmead".to_string()),
 		)
 		.await;
-		println!("Loreweaver: {}", prompt.unwrap());
+
+		println!("{}", prompt.unwrap());
 	}
 }
