@@ -1,17 +1,14 @@
 use serenity::{
 	builder::{CreateApplicationCommand, CreateApplicationCommandOption},
 	model::prelude::{
-		application_command::{ApplicationCommandInteraction, CommandDataOption},
-		command::CommandOptionType,
-		ChannelType,
+		application_command::ApplicationCommandInteraction, command::CommandOptionType, ChannelType,
 	},
 	prelude::Context,
 };
-use tracing::info;
 
 use crate::loreweaver::WeaveError;
 
-use super::utilities::{extract_string_option_value, get_command_option};
+use super::utilities::get_command_option;
 
 pub async fn run(
 	ctx: &Context,
@@ -21,12 +18,12 @@ pub async fn run(
 	let options = &command.data.options;
 
 	let story_size = get_command_option(options, STORY_SIZE_OPTION, true)?.unwrap();
-	let hardcore_mode = get_command_option(options, HARDCORE_MODE_OPTION, true)?.unwrap();
-	let private_story = get_command_option(options, PRIVATE_STORY_OPTION, true)?.unwrap();
-	let story_theme_1 = get_command_option(options, STORY_THEME_1_OPTION, true)?.unwrap();
-	let story_theme_2 = get_command_option(options, STORY_THEME_2_OPTION, true)?.unwrap();
+	let _hardcore_mode = get_command_option(options, HARDCORE_MODE_OPTION, true)?.unwrap();
+	let _private_story = get_command_option(options, PRIVATE_STORY_OPTION, true)?.unwrap();
+	let _story_theme_1 = get_command_option(options, STORY_THEME_1_OPTION, true)?.unwrap();
+	let _story_theme_2 = get_command_option(options, STORY_THEME_2_OPTION, true)?.unwrap();
 	let story_name = get_command_option(options, STORY_NAME_OPTION, true)?.unwrap();
-	let story_description = get_command_option(options, STORY_DESCRIPTION_OPTION, false)
+	let _story_description = get_command_option(options, STORY_DESCRIPTION_OPTION, false)
 		.unwrap_or_default()
 		.unwrap();
 

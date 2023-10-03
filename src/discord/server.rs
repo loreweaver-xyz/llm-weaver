@@ -32,7 +32,11 @@ pub struct WeavingID {
 }
 
 // TODO: Figure out how to get around this.
-impl loreweaver::WeavingID for WeavingID {}
+impl loreweaver::WeavingID for WeavingID {
+	fn base_key(&self) -> String {
+		format!("{}:{}", self.server_id, self.story_id)
+	}
+}
 
 impl Display for WeavingID {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

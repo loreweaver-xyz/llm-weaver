@@ -7,7 +7,6 @@ use async_openai::{
 	error::OpenAIError,
 	types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role},
 };
-use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use serenity::async_trait;
 use tracing::{debug, instrument};
@@ -19,15 +18,14 @@ pub trait Get<T> {
 }
 
 /// A trait representing a unique identifier for a weaving.
-pub trait WeavingID: Debug + Display + Send + Sync + 'static {}
+pub trait WeavingID: Debug + Display + Send + Sync + 'static {
+	/// Returns the base key for a given [`WeavingID`].
+	fn base_key(&self) -> String;
+}
 
 #[async_trait]
 /// A trait representing a storage handler for a specific type of weaving.
 pub trait StorageHandler<Key: WeavingID> {
-	/// Returns the key for a given [`WeavingID`].
-	fn key(weaving_id: &Key) -> String {
-		format!("{weaving_id}")
-	}
 	/// Adds a [`StoryPart`] to storage for a given [`WeavingID`].
 	async fn save_story_part(
 		weaving_id: &Key,
@@ -75,10 +73,8 @@ pub struct ContextMessage {
 /// allowed for the current GPT [`Models`], then we must generate a summary of the current story
 /// part and use that as the starting point for the next story part. This is one of the biggest
 /// challenges for Loreweaver to keep a consistent narrative throughout the many story parts.
-#[derive(Debug, Serialize, Deserialize, FromRedisValue, ToRedisArgs, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct StoryPart {
-	/// The story part number.
-	pub number: u16,
 	/// Number of players that are part of the story. (typically this changes based on players
 	/// entering the commands `/leave` or `/join`).
 	///
@@ -87,7 +83,7 @@ pub struct StoryPart {
 	/// part.
 	pub players: Vec<AccountId>,
 	/// Total number of _GPT tokens_ in the story part.
-	pub context_tokens: u128,
+	pub context_tokens: u16,
 	/// List of [`ContextMessage`]s in the story part.
 	pub context_messages: Vec<ContextMessage>,
 }
@@ -200,7 +196,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			})
 			.collect::<Vec<ChatCompletionRequestMessage>>();
 
-		let max_words = Loreweaver::<T>::max_words(model, None, story_part.context_tokens);
+		let max_words = Loreweaver::<T>::max_words(model, None, story_part.context_tokens as u128);
 
 		debug!("Prompting ChatGPT...");
 

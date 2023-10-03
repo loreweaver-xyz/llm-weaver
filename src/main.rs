@@ -6,7 +6,7 @@ use std::{error::Error, sync::OnceLock};
 
 use clap::{arg, Parser};
 use discord::server::DiscordBot;
-use loreweaver::{models::Models, Get, Loreweaver};
+use loreweaver::{models::Models, Get};
 use service::server::ApiService;
 use tracing::{info, Level};
 use tracing_subscriber::fmt;
