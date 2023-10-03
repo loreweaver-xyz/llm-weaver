@@ -11,7 +11,7 @@ use tokio::time::Instant;
 use tracing::{error, event, info, instrument, Level};
 
 use crate::{
-	loreweaver::{self, Config, Loom, Loreweaver},
+	loreweaver::{self, types::SystemCategory, Config, Loom, Loreweaver},
 	storage::Storage,
 	GPTModel, Server,
 };
@@ -169,7 +169,7 @@ impl EventHandler for DiscordBot {
 			return
 		}
 
-		let category_channel = match msg.channel_id.to_channel(&ctx).await {
+		let maybe_category_channel = match msg.channel_id.to_channel(&ctx).await {
 			Ok(channel) => match channel.guild().map(|guild_channel| guild_channel.parent_id) {
 				Some(Some(parent_id)) =>
 					Some(parent_id.to_channel(&ctx).await.unwrap().category().unwrap()),
@@ -179,21 +179,21 @@ impl EventHandler for DiscordBot {
 		};
 
 		// validate that the category is the Stories category
-		match category_channel {
+		let category_channel = match maybe_category_channel {
 			Some(category_channel) => {
-				const VALID_CHANNEL_NAMES: [&str; 3] =
-					["small-stories", "medium-stories", "large-stories"];
-
-				if !VALID_CHANNEL_NAMES.contains(&category_channel.name.as_str()) {
+				// TODO: why do we need double ref here
+				if !SystemCategory::pretty_categories().contains(&category_channel.name.as_str()) {
 					error!("Channel is not in the Stories category");
 					return
 				}
+
+				category_channel
 			},
 			None => {
 				error!("Channel is not in a category");
 				return
 			},
-		}
+		};
 
 		let start = Instant::now();
 
@@ -206,6 +206,7 @@ impl EventHandler for DiscordBot {
 		};
 
 		let content = match Loreweaver::<Self>::prompt(
+			SystemCategory::pretty_to_system(&category_channel.name),
 			WeavingID { server_id: msg.guild_id.unwrap().0, story_id: msg.channel_id.0 },
 			msg.content.clone(),
 			12345,

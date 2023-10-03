@@ -7,6 +7,8 @@ use serenity::{
 };
 use tracing::error;
 
+use crate::loreweaver::types::{StorySize, SystemCategory};
+
 use super::utilities::get_command_option;
 
 pub async fn run(
@@ -16,7 +18,8 @@ pub async fn run(
 	let guild_id = &command.guild_id.unwrap();
 	let options = &command.data.options;
 
-	let story_size = get_command_option(options, STORY_SIZE_OPTION)?.unwrap();
+	let adventure_type = get_command_option(options, ADVENTURE_TYPE_OPTION)?.unwrap();
+	let adventure_size = get_command_option(options, ADVENTURE_SIZE_OPTION)?.unwrap();
 	let _hardcore_mode = get_command_option(options, HARDCORE_MODE_OPTION)?.unwrap();
 	let _private_story = get_command_option(options, PRIVATE_STORY_OPTION)?.unwrap();
 	let _story_theme_1 = get_command_option(options, STORY_THEME_1_OPTION)?.unwrap();
@@ -30,7 +33,20 @@ pub async fn run(
 		e
 	})?;
 
-	let category_name = format!("{}-stories", story_size);
+	let adventure_size = match adventure_size.as_str() {
+		"small" => StorySize::Small,
+		"medium" => StorySize::Medium,
+		"large" => StorySize::Long,
+		_ => panic!("Bad adventure size"),
+	};
+
+	let category_name: SystemCategory = match adventure_type.as_str() {
+		"story" => SystemCategory::Story(adventure_size),
+		"rpg" => SystemCategory::RPG(adventure_size),
+		_ => panic!("Bad adventure type"),
+	};
+
+	let category_name = category_name.to_pretty();
 
 	let category_id = match channels
 		.iter()
@@ -68,7 +84,8 @@ pub async fn run(
 	Ok("Created story channel".to_string())
 }
 
-const STORY_SIZE_OPTION: &str = "story-size";
+const ADVENTURE_TYPE_OPTION: &str = "adventure-type";
+const ADVENTURE_SIZE_OPTION: &str = "story-size";
 const HARDCORE_MODE_OPTION: &str = "hardcore-mode";
 const PRIVATE_STORY_OPTION: &str = "private-story";
 const STORY_THEME_1_OPTION: &str = "story-theme-1";
@@ -82,8 +99,17 @@ pub fn register(command: &mut CreateApplicationCommand) -> &mut CreateApplicatio
 		.description("Create a new story")
 		.create_option(|option| {
 			option
-				.name(STORY_SIZE_OPTION)
-				.description("The size and complexity of the story")
+				.name(ADVENTURE_TYPE_OPTION)
+				.description("The type of adventure")
+				.kind(CommandOptionType::String)
+				.add_string_choice("Story", "story")
+				.add_string_choice("RPG", "rpg")
+				.required(true)
+		})
+		.create_option(|option| {
+			option
+				.name(ADVENTURE_SIZE_OPTION)
+				.description("The size and detail of the adventure")
 				.kind(CommandOptionType::String)
 				.add_string_choice("Small", "small")
 				.add_string_choice("Medium", "medium")

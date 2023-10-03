@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use serenity::async_trait;
 use tracing::{debug, error, instrument};
 
-use self::models::{MaxTokens, Models};
+use self::{
+	models::{MaxTokens, Models},
+	types::SystemCategory,
+};
+
+pub mod types;
 
 pub trait Get<T> {
 	fn get() -> T;
@@ -107,6 +112,7 @@ pub trait Loom<T: Config> {
 	/// ChatGPT [`Models`] has been reached, a summary will be generated instead of the current
 	/// message history and saved to the cloud. A new message history will begin.
 	async fn prompt(
+		system_category: SystemCategory,
 		weaving_id: T::WeavingID,
 		msg: String,
 		account_id: AccountId,
@@ -184,6 +190,7 @@ impl From<String> for WrapperRole {
 impl<T: Config> Loom<T> for Loreweaver<T> {
 	#[instrument]
 	async fn prompt(
+		system_category: SystemCategory,
 		weaving_id: T::WeavingID,
 		msg: String,
 		_account_id: AccountId,
@@ -213,12 +220,20 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
 
-		let system = std::fs::read_to_string("./loreweaver-systems/rpg-small-system.txt")
-			.map_err(|e| {
-				error!("Failed to read ./loreweaver-systems/rpg-small-system.txt: {e:?}");
-				panic!()
-			})
-			.unwrap();
+		let system_category_str = <SystemCategory as Into<String>>::into(system_category);
+
+		let system =
+			std::fs::read_to_string(format!("./loreweaver-systems/{}.txt", system_category_str))
+				.map_err(|e| {
+					error!(
+						"Failed to read ./loreweaver-systems/{}.txt: {}",
+						system_category_str, e
+					);
+					panic!()
+				})
+				.unwrap();
+
+		debug!("Loreweaver category system loaded: {}", system_category_str);
 
 		// Add the system to the beginning of the message history
 		let mut request_messages = vec![ChatCompletionRequestMessageArgs::default()
@@ -254,7 +269,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			Loreweaver::<T>::max_words(model, None, story_part.context_tokens as u128);
 
 		let res = <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
-			Models::GPT4,
+			T::Model::get(),
 			request_messages,
 			max_response_words,
 		)

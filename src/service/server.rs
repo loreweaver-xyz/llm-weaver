@@ -1,7 +1,11 @@
 use std::fmt::Display;
 
 use crate::{
-	loreweaver::{self, Config, Loom, Loreweaver},
+	loreweaver::{
+		self,
+		types::{StorySize, SystemCategory},
+		Config, Loom, Loreweaver,
+	},
 	storage::Storage,
 	GPTModel, Server,
 };
@@ -44,6 +48,7 @@ impl Config for ApiService {
 impl Server for ApiService {
 	async fn serve() {
 		let prompt = Loreweaver::<Self>::prompt(
+			SystemCategory::Story(StorySize::Small),
 			WeavingID { server_id: 12345, story_id: 12345 },
 			"Hello Loreweaver!".to_string(),
 			12345,
