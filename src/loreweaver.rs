@@ -270,7 +270,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 
 		let res = <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
 			T::Model::get(),
-			request_messages,
+			&mut request_messages,
 			max_response_words,
 		)
 		.await
@@ -364,17 +364,19 @@ pub mod models {
 }
 
 mod secret_lore {
+	use crate::loreweaver::ChatCompletionRequestMessageArgs;
 	use async_openai::{
 		config::OpenAIConfig,
 		error::OpenAIError,
 		types::{
 			ChatCompletionRequestMessage, CreateChatCompletionRequestArgs,
-			CreateChatCompletionResponse,
+			CreateChatCompletionResponse, Role,
 		},
 	};
 	use lazy_static::lazy_static;
 	use tiktoken_rs::p50k_base;
 	use tokio::sync::RwLock;
+	use tracing::error;
 
 	use super::{
 		models::{MaxTokens, Models},
@@ -388,16 +390,35 @@ mod secret_lore {
 
 	pub trait Sealed<T: Config> {
 		/// The action to query ChatGPT with the supplied configurations and messages.
+		///
+		/// Auto injects a system message at the end of vec of messages to instruct ChatGPT to
+		/// respond with a certain number of words.
+		///
+		/// We do this here to avoid any other service from having to do this.
 		async fn do_prompt(
 			model: Models,
-			msgs: Vec<ChatCompletionRequestMessage>,
-			_max_words: MaxTokens,
+			msgs: &mut Vec<ChatCompletionRequestMessage>,
+			max_words: MaxTokens,
 		) -> Result<CreateChatCompletionResponse, OpenAIError> {
+			msgs.push(
+				ChatCompletionRequestMessageArgs::default()
+					.content(format!("Respond with {} words or less", max_words))
+					.role(Role::System)
+					.build()
+					.map_err(|e| {
+						error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
+						e
+					})?
+					.into(),
+			);
+
 			let request = CreateChatCompletionRequestArgs::default()
-				// TODO: use `_max_words` to limit the number of words in the response. ChatGPT does
-				// not  make a coherent response while respecting the max_tokens() limit.
 				.max_tokens(300u16)
+				.temperature(0.9f32)
+				.presence_penalty(0.6f32)
+				.frequency_penalty(0.6f32)
 				.model(model.name())
+				// .suffix("Loreweaver:")
 				.messages(msgs.to_owned())
 				.build()?;
 
