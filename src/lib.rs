@@ -1,3 +1,5 @@
+#![feature(async_fn_in_trait)]
+
 use std::{
 	fmt::{Debug, Display},
 	marker::PhantomData,
@@ -7,11 +9,9 @@ use async_openai::types::{ChatCompletionRequestMessage, ChatCompletionRequestMes
 use serde::{Deserialize, Serialize};
 use serenity::async_trait;
 use tracing::{debug, error, instrument};
+use types::SystemCategory;
 
-use self::{
-	models::{MaxTokens, Models},
-	types::SystemCategory,
-};
+use self::models::{MaxTokens, Models};
 
 pub mod types;
 
@@ -364,13 +364,12 @@ pub mod models {
 }
 
 mod secret_lore {
-	use crate::loreweaver::ChatCompletionRequestMessageArgs;
 	use async_openai::{
 		config::OpenAIConfig,
 		error::OpenAIError,
 		types::{
-			ChatCompletionRequestMessage, CreateChatCompletionRequestArgs,
-			CreateChatCompletionResponse, Role,
+			ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs,
+			CreateChatCompletionRequestArgs, CreateChatCompletionResponse, Role,
 		},
 	};
 	use lazy_static::lazy_static;
