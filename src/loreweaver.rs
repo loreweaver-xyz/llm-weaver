@@ -115,6 +115,7 @@ pub trait Loom<T: Config> {
 	) -> Result<String, LoomError<T>>;
 }
 
+/// Overarching error type for Loreweaver.
 #[derive(Debug)]
 pub enum LoomError<T: Config> {
 	Loreweaver(WeaveError),
@@ -153,6 +154,30 @@ pub enum WeaveError {
 	FailedToGetContent,
 	/// A bad OpenAI role was supplied.
 	BadOpenAIRole,
+}
+
+/// Wrapper around [`async_openai::types::types::Role`] for custom implementation.
+enum WrapperRole {
+	Role(Role),
+}
+
+impl From<WrapperRole> for Role {
+	fn from(role: WrapperRole) -> Self {
+		match role {
+			WrapperRole::Role(role) => role,
+		}
+	}
+}
+
+impl From<String> for WrapperRole {
+	fn from(role: String) -> Self {
+		match role.as_str() {
+			"system" => Self::Role(Role::System),
+			"assistant" => Self::Role(Role::Assistant),
+			"user" => Self::Role(Role::User),
+			_ => panic!("Bad OpenAI role"),
+		}
+	}
 }
 
 #[async_trait]
@@ -194,12 +219,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			.map(|msg: &ContextMessage| {
 				ChatCompletionRequestMessageArgs::default()
 					.content(msg.content.clone())
-					.role(match msg.role.as_str() {
-						"system" => Role::System,
-						"assistant" => Role::Assistant,
-						"user" => Role::User,
-						_ => Err(WeaveError::BadOpenAIRole).unwrap(),
-					})
+					.role(Into::<WrapperRole>::into(msg.role.clone()))
 					.name(match msg.role.as_str() {
 						"system" => "Loreweaver",
 						"assistant" => "Loreweaver", // TODO: This should be the NPC...
@@ -364,7 +384,6 @@ mod secret_lore {
 			);
 
 			let request = CreateChatCompletionRequestArgs::default()
-				// TODO: Set max tokens response based on user subscription
 				// TODO: use `_max_words` to limit the number of words in the response. ChatGPT does
 				// not  make a coherent response while respecting the max_tokens() limit.
 				.max_tokens(300u16)
