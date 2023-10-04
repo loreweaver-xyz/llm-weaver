@@ -11,8 +11,8 @@ use async_openai::{
 	error::OpenAIError,
 	types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role},
 };
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serenity::async_trait;
 use storage::{StorageError, TapestryChest};
 use tracing::{debug, error, instrument};
 

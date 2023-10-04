@@ -1,5 +1,5 @@
+use async_trait::async_trait;
 use redis::{aio::Connection, AsyncCommands, Client};
-use serenity::async_trait;
 use std::fmt::{Debug, Display};
 use tokio::sync::OnceCell;
 use tracing::{debug, error, instrument};
