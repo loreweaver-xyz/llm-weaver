@@ -1,49 +1,60 @@
 #![feature(async_fn_in_trait)]
 #![feature(async_closure)]
+#![feature(associated_type_defaults)]
 
 use std::{
 	fmt::{Debug, Display},
 	marker::PhantomData,
 };
 
-use async_openai::types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role};
+use async_openai::{
+	error::OpenAIError,
+	types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role},
+};
 use serde::{Deserialize, Serialize};
 use serenity::async_trait;
-use storage::StorageError;
+use storage::{StorageError, TapestryChest};
 use tracing::{debug, error, instrument};
-
-use crate::storage::Storage;
 
 use self::models::{MaxTokens, Models};
 
 mod storage;
 
+pub use storage::TapestryChestHandler;
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
 pub trait Get<T> {
 	fn get() -> T;
 }
 
-/// A trait representing a unique identifier for a weaving.
-pub trait WeavingID: Debug + Display + Send + Sync + 'static {
-	/// Returns the base key for a given [`WeavingID`].
-	fn base_key(&self) -> String;
-}
-
-#[async_trait]
-/// Specification for a storage handler.
+/// Represents a unique identifier for any arbitrary entity.
 ///
-/// The implementation of this trait is used to store and retrieve story parts.
-pub trait StorageHandler<Key: WeavingID> {
-	/// The error type for the storage handler.
-	type Error: Display + Debug;
-
-	/// Adds a [`StoryPart`] to storage for a given [`WeavingID`].
-	async fn save_story_part(
-		weaving_id: &Key,
-		story_part: StoryPart,
-		increment: bool,
-	) -> Result<(), Self::Error>;
-	/// Gets the last [`StoryPart`] from storage for a given [`WeavingID`].
-	async fn get_last_story_part(weaving_id: &Key) -> Result<Option<StoryPart>, Self::Error>;
+/// The `TapestryId` trait abstractly represents identifiers, providing a method for
+/// generating a standardized key, which can be utilized across various implementations
+/// in the library, such as the [`TapestryChestHandler`].
+///
+/// ```ignore
+/// use loreweaver::{TapestryId, Get};
+/// use std::fmt::{Debug, Display};
+///
+/// struct MyTapestryId {
+/// 	id: String,
+///     sub_id: String,
+///     // ...
+/// }
+///
+/// impl TapestryId for MyTapestryId {
+/// 	fn base_key(&self) -> String {
+/// 		format!("{}:{}", self.id, self.sub_id)
+/// 	}
+/// }
+pub trait TapestryId: Debug + Display + Send + Sync + 'static {
+	/// Returns the base key.
+	///
+	/// This method should produce a unique string identifier, that will serve as a key for
+	/// associated objects or data within [`TapestryChestHandler`].
+	fn base_key(&self) -> String;
 }
 
 /// A trait consisting mainly of associated types implemented by [`Loreweaver`].
@@ -55,10 +66,14 @@ pub trait StorageHandler<Key: WeavingID> {
 pub trait Config {
 	/// Getter for GPT model to use.
 	type Model: Get<Models>;
-	/// Type alias encompassing a server id and a story id.
+	/// Storage handler implementation for storing and retrieving tapestry fragments.
 	///
-	/// Used mostly for querying some blob storage in the form of a path.
-	type WeavingID: WeavingID;
+	/// This can simply be a struct that implements [`TapestryChestHandler`] utilizing the default
+	/// implementation which uses Redis as the storage backend.
+	///
+	/// If you wish to implement your own storage backend, you can implement the methods from the
+	/// trait. [`Loreweaver`] does not care how you store the data and retrieve your data.
+	type TapestryChest: TapestryChestHandler = TapestryChest;
 }
 /// An platform agnostic type representing a user's account ID.
 pub type AccountId = u64;
@@ -82,7 +97,7 @@ pub struct ContextMessage {
 /// part and use that as the starting point for the next story part. This is one of the biggest
 /// challenges for Loreweaver to keep a consistent narrative throughout the many story parts.
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct StoryPart {
+pub struct TapestryFragment {
 	/// Number of players that are part of the story. (typically this changes based on players
 	/// entering the commands `/leave` or `/join`).
 	///
@@ -112,14 +127,29 @@ pub trait Loom<T: Config> {
 	/// If 80% of the maximum number of tokens allowed in a message history for the configured
 	/// ChatGPT [`Models`] has been reached, a summary will be generated instead of the current
 	/// message history and saved to the cloud. A new message history will begin.
-	async fn prompt(
+	async fn prompt<Id: TapestryId>(
 		system: String,
-		weaving_id: T::WeavingID,
+		tapestry_id: &Id,
 		msg: String,
 		account_id: AccountId,
 		username: String,
 		pseudo_username: Option<String>,
-	) -> Result<String, WeaveError>;
+	) -> Result<String>;
+}
+
+#[derive(Debug, thiserror::Error)]
+enum LoomError {
+	Weave(#[from] WeaveError),
+	Storage(#[from] StorageError),
+}
+
+impl Display for LoomError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Weave(e) => write!(f, "{}", e),
+			Self::Storage(e) => write!(f, "{}", e),
+		}
+	}
 }
 
 /// The bread & butter of Loreweaver.
@@ -146,16 +176,24 @@ impl<T: Config> Loreweaver<T> {
 	}
 }
 
-#[derive(Debug)]
-pub enum WeaveError {
+#[derive(Debug, thiserror::Error)]
+enum WeaveError {
 	/// Failed to prompt OpenAI.
-	FailedPromptOpenAI,
+	FailedPromptOpenAI(OpenAIError),
 	/// Failed to get content from OpenAI response.
 	FailedToGetContent,
 	/// A bad OpenAI role was supplied.
-	BadOpenAIRole,
-	/// Storage error.
-	Storage(StorageError),
+	BadOpenAIRole(String),
+}
+
+impl Display for WeaveError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::FailedPromptOpenAI(e) => write!(f, "Failed to prompt OpenAI: {}", e),
+			Self::FailedToGetContent => write!(f, "Failed to get content from OpenAI response"),
+			Self::BadOpenAIRole(role) => write!(f, "Bad OpenAI role: {}", role),
+		}
+	}
 }
 
 /// Wrapper around [`async_openai::types::types::Role`] for custom implementation.
@@ -185,21 +223,21 @@ impl From<String> for WrapperRole {
 #[async_trait]
 impl<T: Config> Loom<T> for Loreweaver<T> {
 	#[instrument]
-	async fn prompt(
+	async fn prompt<Id: TapestryId>(
 		system: String,
-		weaving_id: T::WeavingID,
+		tapestry_id: &Id,
 		msg: String,
 		_account_id: AccountId,
 		username: String,
 		pseudo_username: Option<String>,
-	) -> Result<String, WeaveError> {
+	) -> Result<String> {
 		let model = T::Model::get();
 
-		let mut story_part = Storage::get_last_story_part(&weaving_id)
+		let mut story_part = T::TapestryChest::get_tapestry_fragment(tapestry_id, None)
 			.await
 			.map_err(|e| {
 				error!("Failed to get last story part: {}", e);
-				WeaveError::Storage(e)
+				e
 			})?
 			.unwrap_or_default();
 
@@ -216,14 +254,17 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
 
-		// Add the system to the beginning of the message history
+		// Add the system to the beginning of the request messages
+		// This will not be persisted to the story part context messages to avoid saving aditional
+		// data. TODO: maybe have a flag to save it to context messages if needed by the
+		// application.
 		let mut request_messages = vec![ChatCompletionRequestMessageArgs::default()
 			.role(Role::System)
 			.content(system)
 			.build()
 			.map_err(|e| {
 				error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
-				WeaveError::FailedPromptOpenAI
+				WeaveError::FailedPromptOpenAI(e)
 			})?
 			.into()];
 
@@ -236,9 +277,9 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 						.content(msg.content.clone())
 						.role(Into::<WrapperRole>::into(msg.role.clone()))
 						.name(match msg.role.as_str() {
-							"system" => "Loreweaver",
-							"assistant" | "user" => username_with_nick.as_str(),
-							_ => Err(WeaveError::BadOpenAIRole).unwrap(),
+							"system" => "Loreweaver".to_string(),
+							"assistant" | "user" => username_with_nick.to_string(),
+							_ => WeaveError::BadOpenAIRole(msg.role.clone()).to_string(),
 						})
 						.build()
 						.unwrap()
@@ -257,7 +298,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		.await
 		.map_err(|e| {
 			error!("Failed to prompt ChatGPT: {}", e);
-			WeaveError::FailedPromptOpenAI
+			WeaveError::FailedPromptOpenAI(e)
 		})?;
 
 		let response_content =
@@ -273,10 +314,12 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 
 		debug!("Saving story part: {:?}", story_part.context_messages);
 
-		Storage::save_story_part(&weaving_id, story_part, false).await.map_err(|e| {
-			error!("Failed to save story part: {}", e);
-			WeaveError::Storage(e)
-		})?;
+		T::TapestryChest::save_tapestry_fragment(tapestry_id, story_part, false)
+			.await
+			.map_err(|e| {
+				error!("Failed to save story part: {}", e);
+				e
+			})?;
 
 		Ok(response_content)
 	}
