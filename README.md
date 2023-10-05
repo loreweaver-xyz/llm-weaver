@@ -1,8 +1,16 @@
 # Loreweaver Library
 
-Loreweaver is a robust library designed to interact with models like ChatGPT, with an emphasis on managing, saving, and tracking message histories over the course of multiple interactions, ensuring a continuous and coherent user experience.
+Loreweaver is a robust library designed to interact with models like ChatGPT, with an emphasis on managing, saving, and tracking message histories over the course of multiple interactions, ensuring a continuous and coherent user experience in long conversations.
 
 > Check out the official [Loreweaver Discord Bot](https://github.com/snowmead/loreweaver-discord-bot) purpously built based on this library!
+
+## Implementation
+
+This library is a rust implementation of [OpenAI's Tactic](https://platform.openai.com/docs/guides/gpt-best-practices/tactic-for-dialogue-applications-that-require-very-long-conversations-summarize-or-filter-previous-dialogue) for handling long conversations with ChatGPT that span beyond a GPT model's maximum context token limit.
+
+Once a certain threshold of context tokens is reached, the library will summarize the entire conversation and begin a new conversation with the summarized context appended to the system instructions.
+
+The library is designed to be as flexible as possible, allowing you to easily integrate it into your own projects.
 
 ## Use Cases
 
