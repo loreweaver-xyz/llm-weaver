@@ -76,15 +76,12 @@ pub trait Config {
 	/// trait. [`Loreweaver`] does not care how you store the data and retrieve your data.
 	type TapestryChest: TapestryChestHandler = TapestryChest;
 }
-/// An platform agnostic type representing a user's account ID.
-pub type AccountId = u64;
 
 /// Context message that represent a single message in a [`StoryPart`].
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct ContextMessage {
 	pub role: String,
-	pub account_id: Option<String>,
-	pub username: Option<String>,
+	pub account_id: String,
 	pub content: String,
 	pub timestamp: String,
 }
@@ -99,13 +96,6 @@ pub struct ContextMessage {
 /// challenges for Loreweaver to keep a consistent narrative throughout the many story parts.
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct TapestryFragment {
-	/// Number of players that are part of the story. (typically this changes based on players
-	/// entering the commands `/leave` or `/join`).
-	///
-	/// When generating a new story part (N + 1, where N is the current story part number), we need
-	/// to copy over the same number of players. The story must remain consistent throughout each
-	/// part.
-	pub players: Vec<AccountId>,
 	/// Total number of _GPT tokens_ in the story part.
 	pub context_tokens: u64,
 	/// List of [`ContextMessage`]s in the story part.
@@ -128,13 +118,23 @@ pub trait Loom<T: Config> {
 	/// If 80% of the maximum number of tokens allowed in a message history for the configured
 	/// ChatGPT [`Models`] has been reached, a summary will be generated instead of the current
 	/// message history and saved to the cloud. A new message history will begin.
-	async fn weave<Id: TapestryId>(
-		tapestry_id: &Id,
+	///
+	/// # Parameters
+	///
+	/// - `tapestry_id`: The [`TapestryId`] to prompt and save context messages to.
+	/// - `system`: The system message to prompt ChatGPT with.
+	/// - `override_max_context_tokens`: Override the maximum number of context tokens allowed for
+	///  the current [`Models`].
+	/// - `msg`: The user message to prompt ChatGPT with.
+	/// - `account_id`: An optional arbitrary representation of an account id. This will be used as
+	///   the `name` parameter when prompting ChatGPT. Leaving it at `None` will leave the `name`
+	///   parameter empty.
+	async fn weave<TID: TapestryId>(
+		tapestry_id: &TID,
 		system: String,
 		override_max_context_tokens: Option<Tokens>,
 		msg: String,
-		account_id: AccountId,
-		username: String,
+		account_id: Option<String>,
 	) -> Result<String>;
 }
 
@@ -209,13 +209,12 @@ impl From<String> for WrapperRole {
 #[async_trait]
 impl<T: Config> Loom<T> for Loreweaver<T> {
 	#[instrument]
-	async fn weave<Id: TapestryId>(
-		tapestry_id: &Id,
+	async fn weave<TID: TapestryId>(
+		tapestry_id: &TID,
 		system: String,
 		override_max_context_tokens: Option<Tokens>,
 		msg: String,
-		_account_id: AccountId,
-		username: String,
+		account_id: Option<String>,
 	) -> Result<String> {
 		let mut story_part = T::TapestryChest::get_tapestry_fragment(tapestry_id, None)
 			.await
@@ -225,10 +224,11 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			})?
 			.unwrap_or_default();
 
+		let account_id = account_id.clone().unwrap_or("".to_string());
+
 		story_part.context_messages.push(ContextMessage {
 			role: "user".to_string(),
-			account_id: None,
-			username: Some(username.clone()),
+			account_id: account_id.clone(),
 			content: msg.clone(),
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
@@ -256,7 +256,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 						.role(Into::<WrapperRole>::into(msg.role.clone()))
 						.name(match msg.role.as_str() {
 							"system" => "Loreweaver".to_string(),
-							"assistant" | "user" => username.to_string(),
+							"assistant" | "user" => msg.account_id.clone(),
 							_ => WeaveError::BadOpenAIRole(msg.role.clone()).to_string(),
 						})
 						.build()
@@ -281,8 +281,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 
 		story_part.context_messages.push(ContextMessage {
 			role: "assistant".to_string(),
-			account_id: None,
-			username: None,
+			account_id: account_id.clone(),
 			content: response_content.clone(),
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});

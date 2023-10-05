@@ -4,7 +4,7 @@ use std::fmt::{Debug, Display};
 use tokio::sync::OnceCell;
 use tracing::{debug, error, instrument};
 
-use crate::{AccountId, ContextMessage, TapestryFragment, TapestryId};
+use crate::{ContextMessage, TapestryFragment, TapestryId};
 
 /// A storage handler trait designed for saving and retrieving fragments of a tapestry.
 ///
@@ -40,8 +40,8 @@ pub trait TapestryChestHandler {
 	/// Returns `Result<(), Self::Error>`. On successful storage, it returns `Ok(())`. If the
 	/// storage operation fails, it should return an `Err` variant containing an error of type
 	/// `Self::Error`.
-	async fn save_tapestry_fragment(
-		tapestry_id: &dyn TapestryId,
+	async fn save_tapestry_fragment<TID: TapestryId>(
+		tapestry_id: &TID,
 		tapestry_fragment: TapestryFragment,
 		_increment: bool,
 	) -> crate::Result<()>;
@@ -58,8 +58,8 @@ pub trait TapestryChestHandler {
 	/// On successful retrieval, it returns `Ok(Some(TapestryFragment))` or `Ok(None)` if no
 	/// fragment was found. If the retrieval operation fails, it should return an `Err` variant
 	/// containing an error of type `Self::Error`.
-	async fn get_tapestry_fragment<Id: TapestryId>(
-		tapestry_id: &Id,
+	async fn get_tapestry_fragment<TID: TapestryId>(
+		tapestry_id: &TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment>>;
 }
@@ -70,8 +70,8 @@ pub struct TapestryChest;
 impl TapestryChestHandler for TapestryChest {
 	type Error = StorageError;
 
-	async fn save_tapestry_fragment(
-		tapestry_id: &dyn TapestryId,
+	async fn save_tapestry_fragment<TID: TapestryId>(
+		tapestry_id: &TID,
 		tapestry_fragment: TapestryFragment,
 		_increment: bool,
 	) -> crate::Result<()> {
@@ -100,13 +100,6 @@ impl TapestryChestHandler for TapestryChest {
 		};
 
 		let key = format!("{base_key}:{instance}");
-
-		con.hset(&key, "players", serde_json::to_string(&tapestry_fragment.players).unwrap())
-			.await
-			.map_err(|e| {
-				error!("Failed to save \"players\" member to {} key: {}", key, e);
-				StorageError::Redis(e)
-			})?;
 
 		debug!("Saved \"players\" member to {} key", key);
 
@@ -138,8 +131,8 @@ impl TapestryChestHandler for TapestryChest {
 		Ok(())
 	}
 
-	async fn get_tapestry_fragment<Id: TapestryId>(
-		tapestry_id: &Id,
+	async fn get_tapestry_fragment<TID: TapestryId>(
+		tapestry_id: &TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment>> {
 		let client = get_client().await.expect("Failed to get redis client");
@@ -159,16 +152,6 @@ impl TapestryChestHandler for TapestryChest {
 		let key = format!("{base_key}:{instance}");
 
 		let tapestry_fragment = TapestryFragment {
-			players: {
-				let raw_players: String = con.hget(&key, "players").await.map_err(|e| {
-					error!("Failed to get \"players\" member from {} key: {}", key, e);
-					StorageError::Redis(e)
-				})?;
-				serde_json::from_str::<Vec<AccountId>>(&raw_players).map_err(|e| {
-					error!("Failed to parse story part players: {}", e);
-					StorageError::Parsing
-				})?
-			},
 			context_tokens: {
 				let context_tokens_str: String =
 					con.hget(&key, "context_tokens").await.map_err(|e| {
