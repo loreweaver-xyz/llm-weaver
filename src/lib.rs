@@ -12,11 +12,12 @@ use async_openai::{
 	types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role},
 };
 use async_trait::async_trait;
+use models::Tokens;
 use serde::{Deserialize, Serialize};
 use storage::{StorageError, TapestryChest};
 use tracing::{debug, error, instrument};
 
-use self::models::{MaxTokens, Models};
+use self::models::Models;
 
 mod storage;
 
@@ -106,7 +107,7 @@ pub struct TapestryFragment {
 	/// part.
 	pub players: Vec<AccountId>,
 	/// Total number of _GPT tokens_ in the story part.
-	pub context_tokens: u16,
+	pub context_tokens: u64,
 	/// List of [`ContextMessage`]s in the story part.
 	pub context_messages: Vec<ContextMessage>,
 }
@@ -128,12 +129,12 @@ pub trait Loom<T: Config> {
 	/// ChatGPT [`Models`] has been reached, a summary will be generated instead of the current
 	/// message history and saved to the cloud. A new message history will begin.
 	async fn weave<Id: TapestryId>(
-		system: String,
 		tapestry_id: &Id,
+		system: String,
+		override_max_context_tokens: Option<Tokens>,
 		msg: String,
 		account_id: AccountId,
 		username: String,
-		pseudo_username: Option<String>,
 	) -> Result<String>;
 }
 
@@ -159,22 +160,7 @@ pub struct Loreweaver<T: Config>(PhantomData<T>);
 
 impl<T: Config> secret_lore::Sealed<T> for Loreweaver<T> {}
 
-impl<T: Config> Loreweaver<T> {
-	/// Maximum number of words to return in a response based on maximum tokens of GPT model or a
-	/// `custom` supplied value.
-	///
-	/// Every token equates to 75% of a word.
-	fn max_words(
-		model: Models,
-		custom_max_tokens: Option<MaxTokens>,
-		context_tokens: MaxTokens,
-	) -> MaxTokens {
-		let max_tokens = custom_max_tokens
-			.unwrap_or(Models::default_max_response_tokens(&model, context_tokens));
-
-		(max_tokens as f64 * 0.75) as MaxTokens
-	}
-}
+impl<T: Config> Loreweaver<T> {}
 
 #[derive(Debug, thiserror::Error)]
 enum WeaveError {
@@ -224,15 +210,13 @@ impl From<String> for WrapperRole {
 impl<T: Config> Loom<T> for Loreweaver<T> {
 	#[instrument]
 	async fn weave<Id: TapestryId>(
-		system: String,
 		tapestry_id: &Id,
+		system: String,
+		override_max_context_tokens: Option<Tokens>,
 		msg: String,
 		_account_id: AccountId,
 		username: String,
-		pseudo_username: Option<String>,
 	) -> Result<String> {
-		let model = T::Model::get();
-
 		let mut story_part = T::TapestryChest::get_tapestry_fragment(tapestry_id, None)
 			.await
 			.map_err(|e| {
@@ -241,15 +225,10 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			})?
 			.unwrap_or_default();
 
-		let username_with_nick = match pseudo_username {
-			Some(pseudo_username) => format!("{}{}", username, pseudo_username),
-			None => username,
-		};
-
 		story_part.context_messages.push(ContextMessage {
 			role: "user".to_string(),
 			account_id: None,
-			username: Some(username_with_nick.clone()),
+			username: Some(username.clone()),
 			content: msg.clone(),
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
@@ -278,7 +257,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 						.role(Into::<WrapperRole>::into(msg.role.clone()))
 						.name(match msg.role.as_str() {
 							"system" => "Loreweaver".to_string(),
-							"assistant" | "user" => username_with_nick.to_string(),
+							"assistant" | "user" => username.to_string(),
 							_ => WeaveError::BadOpenAIRole(msg.role.clone()).to_string(),
 						})
 						.build()
@@ -287,13 +266,10 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 				.collect::<Vec<ChatCompletionRequestMessage>>(),
 		);
 
-		let max_response_words =
-			Loreweaver::<T>::max_words(model, None, story_part.context_tokens as u128);
-
 		let res = <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
-			T::Model::get(),
 			&mut request_messages,
-			max_response_words,
+			story_part.context_tokens,
+			override_max_context_tokens,
 		)
 		.await
 		.map_err(|e| {
@@ -325,10 +301,124 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 	}
 }
 
+mod secret_lore {
+	use crate::Get;
+	use async_openai::{
+		config::OpenAIConfig,
+		error::OpenAIError,
+		types::{
+			ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs,
+			CreateChatCompletionRequestArgs, CreateChatCompletionResponse, Role,
+		},
+	};
+	use lazy_static::lazy_static;
+	use tokio::sync::RwLock;
+	use tracing::error;
+
+	use crate::models::Tokens;
+
+	use super::{models::Models, Config};
+
+	lazy_static! {
+		/// The OpenAI client to interact with the OpenAI API.
+		static ref OPENAI_CLIENT: RwLock<async_openai::Client<OpenAIConfig>> = RwLock::new(async_openai::Client::new());
+	}
+
+	/// Maximum percentage of tokens allowed to generate a summary.
+	///
+	/// This is not a fixed amount of tokens since the maximum amount of context tokens can change
+	/// depending on the model or user input.
+	const SUMMARY_PERCENTAGE: f64 = 0.1;
+
+	/// Token to word ratio.
+	///
+	/// Every token equates to 75% of a word.
+	const TOKEN_TO_WORD_RATIO: f64 = 0.75;
+
+	pub trait Sealed<T: Config> {
+		/// The action to query ChatGPT with the supplied configurations and messages.
+		///
+		/// Auto injects a system message at the end of vec of messages to instruct ChatGPT to
+		/// respond with a certain number of words.
+		///
+		/// We do this here to avoid any other service from having to do this.
+		async fn do_prompt(
+			msgs: &mut Vec<ChatCompletionRequestMessage>,
+			context_tokens: Tokens,
+			override_max_tokens: Option<Tokens>,
+		) -> Result<CreateChatCompletionResponse, OpenAIError> {
+			let model = T::Model::get();
+
+			let max_response_words = Self::max_words(model, override_max_tokens, context_tokens);
+
+			msgs.push(
+				ChatCompletionRequestMessageArgs::default()
+					.content(format!("Respond with {} words or less", max_response_words))
+					.role(Role::System)
+					.build()
+					.map_err(|e| {
+						error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
+						e
+					})?
+					.into(),
+			);
+
+			let request = CreateChatCompletionRequestArgs::default()
+				.max_tokens(300u16)
+				.temperature(0.9f32)
+				.presence_penalty(0.6f32)
+				.frequency_penalty(0.6f32)
+				.model(model.name())
+				// .suffix("Loreweaver:")
+				.messages(msgs.to_owned())
+				.build()?;
+
+			OPENAI_CLIENT.read().await.chat().create(request).await
+		}
+
+		/// Maximum number of words to return in a response based on maximum tokens of GPT model or
+		/// a `custom` supplied value.
+		///
+		/// Every token equates to 75% of a word.
+		fn max_words(
+			model: Models,
+			custom_max_tokens: Option<Tokens>,
+			context_tokens: Tokens,
+		) -> Tokens {
+			let tokens_available = custom_max_tokens
+				.unwrap_or(Models::default_max_response_tokens(&model, context_tokens))
+				as f64 * SUMMARY_PERCENTAGE;
+
+			(tokens_available * TOKEN_TO_WORD_RATIO) as Tokens
+		}
+	}
+}
+
 pub mod models {
 	use clap::{builder::PossibleValue, ValueEnum};
+	use tiktoken_rs::p50k_base;
 
-	pub type MaxTokens = u128;
+	/// Tokens are a ChatGPT concept which represent normally a third of a word (or 75%).
+	pub type Tokens = u64;
+
+	/// Tokens are a ChatGPT concept which represent normally a third of a word (or 75%).
+	///
+	/// This trait auto implements some basic utility methods for counting the number of tokens from
+	/// a string.
+	pub trait Token: ToString {
+		/// Count the number of tokens in the string.
+		fn count_tokens(&self) -> Tokens {
+			let bpe = p50k_base().unwrap();
+			let tokens = bpe.encode_with_special_tokens(&self.to_string());
+
+			tokens.len() as Tokens
+		}
+	}
+
+	/// Implement the trait for String.
+	///
+	/// This is done so that we can call `count_tokens` on a String.
+	impl Token for String {}
 
 	/// The ChatGPT language models that are available to use.
 	#[derive(PartialEq, Eq, Clone, Debug, Copy)]
@@ -367,101 +457,16 @@ pub mod models {
 		///
 		/// `tokens_in_context` parameter is the current number of tokens that are part of the
 		/// context. This should not surpass the [`max_context_tokens`]
-		pub fn default_max_response_tokens(
-			model: &Models,
-			tokens_in_context: MaxTokens,
-		) -> MaxTokens {
+		pub fn default_max_response_tokens(model: &Models, tokens_in_context: Tokens) -> Tokens {
 			(model.max_context_tokens() - tokens_in_context) / 3
 		}
 
 		/// Maximum number of tokens that can be processed at once by ChatGPT.
-		pub fn max_context_tokens(&self) -> MaxTokens {
+		pub fn max_context_tokens(&self) -> Tokens {
 			match self {
 				Self::GPT3 => 4_096,
 				Self::GPT4 => 8_192,
 			}
 		}
 	}
-}
-
-mod secret_lore {
-	use async_openai::{
-		config::OpenAIConfig,
-		error::OpenAIError,
-		types::{
-			ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs,
-			CreateChatCompletionRequestArgs, CreateChatCompletionResponse, Role,
-		},
-	};
-	use lazy_static::lazy_static;
-	use tiktoken_rs::p50k_base;
-	use tokio::sync::RwLock;
-	use tracing::error;
-
-	use super::{
-		models::{MaxTokens, Models},
-		Config,
-	};
-
-	lazy_static! {
-		/// The OpenAI client to interact with the OpenAI API.
-		static ref OPENAI_CLIENT: RwLock<async_openai::Client<OpenAIConfig>> = RwLock::new(async_openai::Client::new());
-	}
-
-	pub trait Sealed<T: Config> {
-		/// The action to query ChatGPT with the supplied configurations and messages.
-		///
-		/// Auto injects a system message at the end of vec of messages to instruct ChatGPT to
-		/// respond with a certain number of words.
-		///
-		/// We do this here to avoid any other service from having to do this.
-		async fn do_prompt(
-			model: Models,
-			msgs: &mut Vec<ChatCompletionRequestMessage>,
-			max_words: MaxTokens,
-		) -> Result<CreateChatCompletionResponse, OpenAIError> {
-			msgs.push(
-				ChatCompletionRequestMessageArgs::default()
-					.content(format!("Respond with {} words or less", max_words))
-					.role(Role::System)
-					.build()
-					.map_err(|e| {
-						error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
-						e
-					})?
-					.into(),
-			);
-
-			let request = CreateChatCompletionRequestArgs::default()
-				.max_tokens(300u16)
-				.temperature(0.9f32)
-				.presence_penalty(0.6f32)
-				.frequency_penalty(0.6f32)
-				.model(model.name())
-				// .suffix("Loreweaver:")
-				.messages(msgs.to_owned())
-				.build()?;
-
-			OPENAI_CLIENT.read().await.chat().create(request).await
-		}
-	}
-
-	/// Tokens are a ChatGPT concept which represent normally a third of a word (or 75%).
-	///
-	/// This trait auto implements some basic utility methods for counting the number of tokens from
-	/// a string.
-	pub trait Tokens: ToString {
-		/// Count the number of tokens in the string.
-		fn count_tokens(&self) -> MaxTokens {
-			let bpe = p50k_base().unwrap();
-			let tokens = bpe.encode_with_special_tokens(&self.to_string());
-
-			tokens.len() as MaxTokens
-		}
-	}
-
-	/// Implement the trait for String.
-	///
-	/// This is done so that we can call `count_tokens` on a String.
-	impl Tokens for String {}
 }

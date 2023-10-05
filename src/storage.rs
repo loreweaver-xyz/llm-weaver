@@ -175,7 +175,7 @@ impl TapestryChestHandler for TapestryChest {
 						error!("Failed to get \"context_tokens\" member from {} key: {}", key, e);
 						StorageError::Redis(e)
 					})?;
-				context_tokens_str.parse::<u16>().map_err(|e| {
+				context_tokens_str.parse::<u64>().map_err(|e| {
 					error!("Failed to parse \"context_tokens\" member from {} key: {}", key, e);
 					StorageError::Parsing
 				})?
