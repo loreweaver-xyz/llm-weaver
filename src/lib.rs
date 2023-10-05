@@ -127,7 +127,7 @@ pub trait Loom<T: Config> {
 	/// If 80% of the maximum number of tokens allowed in a message history for the configured
 	/// ChatGPT [`Models`] has been reached, a summary will be generated instead of the current
 	/// message history and saved to the cloud. A new message history will begin.
-	async fn prompt<Id: TapestryId>(
+	async fn weave<Id: TapestryId>(
 		system: String,
 		tapestry_id: &Id,
 		msg: String,
@@ -223,7 +223,7 @@ impl From<String> for WrapperRole {
 #[async_trait]
 impl<T: Config> Loom<T> for Loreweaver<T> {
 	#[instrument]
-	async fn prompt<Id: TapestryId>(
+	async fn weave<Id: TapestryId>(
 		system: String,
 		tapestry_id: &Id,
 		msg: String,
