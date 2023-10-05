@@ -40,15 +40,15 @@ pub trait Get<T> {
 /// use std::fmt::{Debug, Display};
 ///
 /// struct MyTapestryId {
-/// 	id: String,
+///     id: String,
 ///     sub_id: String,
 ///     // ...
 /// }
 ///
 /// impl TapestryId for MyTapestryId {
-/// 	fn base_key(&self) -> String {
-/// 		format!("{}:{}", self.id, self.sub_id)
-/// 	}
+///     fn base_key(&self) -> String {
+///         format!("{}:{}", self.id, self.sub_id)
+///     }
 /// }
 pub trait TapestryId: Debug + Display + Send + Sync + 'static {
 	/// Returns the base key.
@@ -244,8 +244,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			.map_err(|e| {
 				error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
 				WeaveError::FailedPromptOpenAI(e)
-			})?
-			.into()];
+			})?];
 
 		request_messages.extend(
 			story_part
@@ -359,8 +358,7 @@ mod secret_lore {
 					.map_err(|e| {
 						error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
 						e
-					})?
-					.into(),
+					})?,
 			);
 
 			let request = CreateChatCompletionRequestArgs::default()

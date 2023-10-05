@@ -90,7 +90,7 @@ impl TapestryChestHandler for TapestryChest {
 				// 	WeaveError::Storage
 				// })?;
 
-				con.zadd(&base_key, 0, 0).await.map_err(|e| {
+				con.zadd(base_key, 0, 0).await.map_err(|e| {
 					error!("Failed to save story part to Redis: {}", e);
 					StorageError::Redis(e)
 				})?;
@@ -227,11 +227,10 @@ async fn get_score_from_last_zset_member(
 	base_key: &String,
 ) -> Result<Option<u64>, StorageError> {
 	debug!("Executing ZRANGE_WITHSCORES {}...", base_key);
-	let member_score: Vec<String> =
-		con.zrange_withscores(&base_key, -1, -1).await.map_err(|e| {
-			error!("Failed to save story part to Redis: {}", e);
-			StorageError::Redis(e)
-		})?;
+	let member_score: Vec<String> = con.zrange_withscores(base_key, -1, -1).await.map_err(|e| {
+		error!("Failed to save story part to Redis: {}", e);
+		StorageError::Redis(e)
+	})?;
 	debug!("Result ZRANGE_WITHSCORES: {:?}", member_score);
 
 	let instance = match member_score.is_empty() {
