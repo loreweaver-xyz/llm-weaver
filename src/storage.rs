@@ -4,7 +4,7 @@ use std::fmt::{Debug, Display};
 use tokio::sync::OnceCell;
 use tracing::{debug, error, instrument};
 
-use crate::{ContextMessage, TapestryFragment, TapestryId};
+use crate::{models::Tokens, ContextMessage, TapestryFragment, TapestryId};
 
 /// A storage handler trait designed for saving and retrieving fragments of a tapestry.
 ///
@@ -158,7 +158,7 @@ impl TapestryChestHandler for TapestryChest {
 						error!("Failed to get \"context_tokens\" member from {} key: {}", key, e);
 						StorageError::Redis(e)
 					})?;
-				context_tokens_str.parse::<u64>().map_err(|e| {
+				context_tokens_str.parse::<Tokens>().map_err(|e| {
 					error!("Failed to parse \"context_tokens\" member from {} key: {}", key, e);
 					StorageError::Parsing
 				})?

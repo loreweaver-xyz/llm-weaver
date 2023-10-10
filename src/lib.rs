@@ -58,15 +58,23 @@ pub trait TapestryId: Debug + Display + Send + Sync + 'static {
 	fn base_key(&self) -> String;
 }
 
-/// A trait consisting mainly of associated types implemented by [`Loreweaver`].
-///
-/// Normally structs implementing [`crate::Server`] would implement this trait to call methods
-/// implemented by [`Loreweaver`]
+/// A trait consisting of the main configuration parameters for [`Loreweaver`].
 #[async_trait]
-/// A trait representing the configuration for a Loreweaver server.
 pub trait Config {
 	/// Getter for GPT model to use.
 	type Model: Get<Models>;
+	// The sampling temperature, between 0 and 1. Higher values like 0.8 will make the output more
+	// random, while lower values like 0.2 will make it more focused and deterministic. If set to 0,
+	// the model will use log probability to automatically increase the temperature until certain
+	// thresholds are hit.
+	type Temperature: Get<f32>;
+	// Number between -2.0 and 2.0. Positive values penalize new tokens based on whether they appear
+	// in the text so far, increasing the model's likelihood to talk about new topics.
+	type PresencePenality: Get<f32>;
+	// Number between -2.0 and 2.0. Positive values penalize new tokens based on their existing
+	// frequency in the text so far, decreasing the model's likelihood to repeat the same line
+	// verbatim.
+	type FrequencyPenality: Get<f32>;
 	/// Storage handler implementation for storing and retrieving tapestry fragments.
 	///
 	/// This can simply be a struct that implements [`TapestryChestHandler`] utilizing the default
@@ -97,7 +105,7 @@ pub struct ContextMessage {
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct TapestryFragment {
 	/// Total number of _GPT tokens_ in the story part.
-	pub context_tokens: u64,
+	pub context_tokens: Tokens,
 	/// List of [`ContextMessage`]s in the story part.
 	pub context_messages: Vec<ContextMessage>,
 }
@@ -326,12 +334,12 @@ mod secret_lore {
 	///
 	/// This is not a fixed amount of tokens since the maximum amount of context tokens can change
 	/// depending on the model or user input.
-	const SUMMARY_PERCENTAGE: f64 = 0.1;
+	const SUMMARY_PERCENTAGE: f32 = 0.1;
 
 	/// Token to word ratio.
 	///
 	/// Every token equates to 75% of a word.
-	const TOKEN_TO_WORD_RATIO: f64 = 0.75;
+	const TOKEN_TO_WORD_RATIO: f32 = 0.75;
 
 	pub trait Sealed<T: Config> {
 		/// The action to query ChatGPT with the supplied configurations and messages.
@@ -347,11 +355,12 @@ mod secret_lore {
 		) -> Result<CreateChatCompletionResponse, OpenAIError> {
 			let model = T::Model::get();
 
-			let max_response_words = Self::max_words(model, override_max_tokens, context_tokens);
+			let (tokens, words) =
+				Self::max_tokens_and_words(model, override_max_tokens, context_tokens);
 
 			msgs.push(
 				ChatCompletionRequestMessageArgs::default()
-					.content(format!("Respond with {} words or less", max_response_words))
+					.content(format!("Respond with {} words or less", words))
 					.role(Role::System)
 					.build()
 					.map_err(|e| {
@@ -361,12 +370,11 @@ mod secret_lore {
 			);
 
 			let request = CreateChatCompletionRequestArgs::default()
-				.max_tokens(300u16)
-				.temperature(0.9f32)
-				.presence_penalty(0.6f32)
-				.frequency_penalty(0.6f32)
+				.max_tokens(tokens)
+				.temperature(T::Temperature::get())
+				.presence_penalty(T::PresencePenality::get())
+				.frequency_penalty(T::FrequencyPenality::get())
 				.model(model.name())
-				// .suffix("Loreweaver:")
 				.messages(msgs.to_owned())
 				.build()?;
 
@@ -374,19 +382,19 @@ mod secret_lore {
 		}
 
 		/// Maximum number of words to return in a response based on maximum tokens of GPT model or
-		/// a `custom` supplied value.
+		/// a `custom` supplied max token value.
 		///
 		/// Every token equates to 75% of a word.
-		fn max_words(
+		fn max_tokens_and_words(
 			model: Models,
 			custom_max_tokens: Option<Tokens>,
 			context_tokens: Tokens,
-		) -> Tokens {
+		) -> (Tokens, u16) {
 			let tokens_available = custom_max_tokens
 				.unwrap_or(Models::default_max_response_tokens(&model, context_tokens))
-				as f64 * SUMMARY_PERCENTAGE;
+				as f32 * SUMMARY_PERCENTAGE;
 
-			(tokens_available * TOKEN_TO_WORD_RATIO) as Tokens
+			(tokens_available as Tokens, (tokens_available * TOKEN_TO_WORD_RATIO) as u16)
 		}
 	}
 }
@@ -396,7 +404,7 @@ pub mod models {
 	use tiktoken_rs::p50k_base;
 
 	/// Tokens are a ChatGPT concept which represent normally a third of a word (or 75%).
-	pub type Tokens = u64;
+	pub type Tokens = u16;
 
 	/// Tokens are a ChatGPT concept which represent normally a third of a word (or 75%).
 	///
