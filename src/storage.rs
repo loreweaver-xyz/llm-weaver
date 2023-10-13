@@ -41,7 +41,7 @@ pub trait TapestryChestHandler {
 	/// storage operation fails, it should return an `Err` variant containing an error of type
 	/// `Self::Error`.
 	async fn save_tapestry_fragment<TID: TapestryId>(
-		tapestry_id: &TID,
+		tapestry_id: TID,
 		tapestry_fragment: TapestryFragment,
 		_increment: bool,
 	) -> crate::Result<()>;
@@ -59,7 +59,7 @@ pub trait TapestryChestHandler {
 	/// fragment was found. If the retrieval operation fails, it should return an `Err` variant
 	/// containing an error of type `Self::Error`.
 	async fn get_tapestry_fragment<TID: TapestryId>(
-		tapestry_id: &TID,
+		tapestry_id: TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment>>;
 }
@@ -71,7 +71,7 @@ impl TapestryChestHandler for TapestryChest {
 	type Error = StorageError;
 
 	async fn save_tapestry_fragment<TID: TapestryId>(
-		tapestry_id: &TID,
+		tapestry_id: TID,
 		tapestry_fragment: TapestryFragment,
 		_increment: bool,
 	) -> crate::Result<()> {
@@ -132,7 +132,7 @@ impl TapestryChestHandler for TapestryChest {
 	}
 
 	async fn get_tapestry_fragment<TID: TapestryId>(
-		tapestry_id: &TID,
+		tapestry_id: TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment>> {
 		let client = get_client().await.expect("Failed to get redis client");
