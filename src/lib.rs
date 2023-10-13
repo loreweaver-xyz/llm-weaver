@@ -273,11 +273,12 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		account_id: Option<String>,
 	) -> Result<String> {
 		if let Some(custom_max_tokens) = override_max_context_tokens {
-			if custom_max_tokens > T::Model::get().max_context_tokens() {
+			let model = T::Model::get();
+			if custom_max_tokens > model.max_context_tokens() {
 				return Err(Box::new(WeaveError::BadOpenAIRole(format!(
 					"Custom max tokens cannot be greater than model {} max tokens: {}",
-					T::Model::get().name(),
-					T::Model::get().max_context_tokens()
+					model.name(),
+					model.max_context_tokens()
 				))))
 			}
 		}
@@ -299,15 +300,16 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
 
-		let mut request_messages = <Loreweaver<T> as Loom<T>>::build_message(MessageParams {
-			role: Role::System,
-			content: system,
-		})
-		.await
-		.map_err(|e| {
-			error!("Failed to build system message: {}", e);
-			e
-		})?;
+		let mut request_messages: <Loreweaver<T> as Loom<T>>::RequestMessages =
+			<Loreweaver<T> as Loom<T>>::build_message(Self::Message {
+				role: Role::System,
+				content: system,
+			})
+			.await
+			.map_err(|e| {
+				error!("Failed to build system message: {}", e);
+				e
+			})?;
 
 		// Add the system to the beginning of the request messages
 		// This will not be persisted to the story part context messages to avoid saving aditional
@@ -329,7 +331,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 						.build()
 						.unwrap()
 				})
-				.collect::<Vec<ChatCompletionRequestMessage>>(),
+				.collect::<<Loreweaver<T> as Loom<T>>::RequestMessages>(),
 		);
 
 		let (tokens, words) = <Loreweaver<T> as Loom<T>>::max_tokens_and_words(
