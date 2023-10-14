@@ -8,13 +8,19 @@ use std::{
 };
 
 use async_openai::{
+	config::OpenAIConfig,
 	error::OpenAIError,
-	types::{ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs, Role},
+	types::{
+		ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs,
+		CreateChatCompletionRequestArgs, CreateChatCompletionResponse, Role,
+	},
 };
 use async_trait::async_trait;
+use lazy_static::lazy_static;
 use models::Tokens;
 use serde::{Deserialize, Serialize};
 use storage::{StorageError, TapestryChest};
+use tokio::sync::RwLock;
 use tracing::{debug, error, instrument};
 
 use self::models::Models;
@@ -50,7 +56,7 @@ pub trait Get<T> {
 ///         format!("{}:{}", self.id, self.sub_id)
 ///     }
 /// }
-pub trait TapestryId: Debug + Display + Send + Sync + 'static {
+pub trait TapestryId: Debug + Display + Clone + Send + Sync + 'static {
 	/// Returns the base key.
 	///
 	/// This method should produce a unique string identifier, that will serve as a key for
@@ -59,22 +65,30 @@ pub trait TapestryId: Debug + Display + Send + Sync + 'static {
 }
 
 /// A trait consisting of the main configuration parameters for [`Loreweaver`].
-#[async_trait]
 pub trait Config {
+	/// The sampling temperature, between 0 and 1. Higher values like 0.8 will make the output more
+	/// random, while lower values like 0.2 will make it more focused and deterministic. If set to
+	/// 0, the model will use log probability to automatically increase the temperature until
+	/// certain thresholds are hit.
+	///
+	/// Defaults to `0.0`
+	const TEMPRATURE: f32 = 0.0;
+	/// Number between -2.0 and 2.0. Positive values penalize new tokens based on whether they
+	/// appear in the text so far, increasing the model's likelihood to talk about new topics.
+	///
+	/// Defaults to `0.0`
+	const PRESENCE_PENALTY: f32 = 0.0;
+	/// Number between -2.0 and 2.0. Positive values penalize new tokens based on their existing
+	/// frequency in the text so far, decreasing the model's likelihood to repeat the same line
+	/// verbatim.
+	///
+	/// Defaults to `0.0`
+	const FREQUENCY_PENALTY: f32 = 0.0;
+
 	/// Getter for GPT model to use.
-	type Model: Get<Models>;
-	// The sampling temperature, between 0 and 1. Higher values like 0.8 will make the output more
-	// random, while lower values like 0.2 will make it more focused and deterministic. If set to 0,
-	// the model will use log probability to automatically increase the temperature until certain
-	// thresholds are hit.
-	type Temperature: Get<f32>;
-	// Number between -2.0 and 2.0. Positive values penalize new tokens based on whether they appear
-	// in the text so far, increasing the model's likelihood to talk about new topics.
-	type PresencePenality: Get<f32>;
-	// Number between -2.0 and 2.0. Positive values penalize new tokens based on their existing
-	// frequency in the text so far, decreasing the model's likelihood to repeat the same line
-	// verbatim.
-	type FrequencyPenality: Get<f32>;
+	///
+	/// Defaults to [`models::DefaultModel`]
+	type Model: Get<Models> = models::DefaultModel;
 	/// Storage handler implementation for storing and retrieving tapestry fragments.
 	///
 	/// This can simply be a struct that implements [`TapestryChestHandler`] utilizing the default
@@ -82,6 +96,9 @@ pub trait Config {
 	///
 	/// If you wish to implement your own storage backend, you can implement the methods from the
 	/// trait. [`Loreweaver`] does not care how you store the data and retrieve your data.
+	///
+	/// Defaults to [`TapestryChest`]. Using this default requires you to supply the `hostname`,
+	/// `port` and `credentials` to connect to your instance.
 	type TapestryChest: TapestryChestHandler = TapestryChest;
 }
 
@@ -119,6 +136,10 @@ pub struct TapestryFragment {
 /// abstracting the logic from the services calling them.
 #[async_trait]
 pub trait Loom<T: Config> {
+	type Message;
+	type RequestMessages;
+	type Response;
+
 	/// Prompt Loreweaver for a response for [`WeavingID`].
 	///
 	/// Prompts ChatGPT with the current [`StoryPart`] and the `msg`.
@@ -138,12 +159,29 @@ pub trait Loom<T: Config> {
 	///   the `name` parameter when prompting ChatGPT. Leaving it at `None` will leave the `name`
 	///   parameter empty.
 	async fn weave<TID: TapestryId>(
-		tapestry_id: &TID,
+		tapestry_id: TID,
 		system: String,
 		override_max_context_tokens: Option<Tokens>,
 		msg: String,
 		account_id: Option<String>,
 	) -> Result<String>;
+
+	/// Build the message/messages to prompt ChatGPT with.
+	async fn build_message(msg: Self::Message) -> Result<Self::RequestMessages>;
+
+	/// The action to query ChatGPT with the supplied configurations and messages.
+	async fn prompt(msgs: &mut Self::RequestMessages, max_tokens: Tokens)
+		-> Result<Self::Response>;
+
+	/// Get the content from the response.
+	async fn get_content(res: &Self::Response) -> Result<String>;
+
+	/// Maximum number tokens and words allowed for response.
+	fn max_tokens_and_words(
+		model: Models,
+		custom_max_tokens: Option<Tokens>,
+		context_tokens: Tokens,
+	) -> (Tokens, u16);
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -165,10 +203,6 @@ impl Display for LoomError {
 ///
 /// All core functionality is implemented by this struct.
 pub struct Loreweaver<T: Config>(PhantomData<T>);
-
-impl<T: Config> secret_lore::Sealed<T> for Loreweaver<T> {}
-
-impl<T: Config> Loreweaver<T> {}
 
 #[derive(Debug, thiserror::Error)]
 enum WeaveError {
@@ -214,17 +248,53 @@ impl From<String> for WrapperRole {
 	}
 }
 
+/// Maximum percentage of tokens allowed to generate a summary.
+///
+/// This is not a fixed amount of tokens since the maximum amount of context tokens can change
+/// depending on the model or user input.
+const SUMMARY_PERCENTAGE: f32 = 0.1;
+
+/// Token to word ratio.
+///
+/// Every token equates to 75% of a word.
+const TOKEN_WORD_RATIO: f32 = 0.75;
+
+lazy_static! {
+	/// The OpenAI client to interact with the OpenAI API.
+	static ref OPENAI_CLIENT: RwLock<async_openai::Client<OpenAIConfig>> = RwLock::new(async_openai::Client::new());
+}
+
+pub struct MessageParams {
+	role: Role,
+	content: String,
+}
+
 #[async_trait]
 impl<T: Config> Loom<T> for Loreweaver<T> {
+	type Message = MessageParams;
+	type RequestMessages = Vec<ChatCompletionRequestMessage>;
+	type Response = CreateChatCompletionResponse;
+
 	#[instrument]
 	async fn weave<TID: TapestryId>(
-		tapestry_id: &TID,
+		tapestry_id: TID,
 		system: String,
 		override_max_context_tokens: Option<Tokens>,
 		msg: String,
 		account_id: Option<String>,
 	) -> Result<String> {
-		let mut story_part = T::TapestryChest::get_tapestry_fragment(tapestry_id, None)
+		if let Some(custom_max_tokens) = override_max_context_tokens {
+			let model = T::Model::get();
+			if custom_max_tokens > model.max_context_tokens() {
+				return Err(Box::new(WeaveError::BadOpenAIRole(format!(
+					"Custom max tokens cannot be greater than model {} max tokens: {}",
+					model.name(),
+					model.max_context_tokens()
+				))))
+			}
+		}
+
+		let mut story_part = T::TapestryChest::get_tapestry_fragment(tapestry_id.clone(), None)
 			.await
 			.map_err(|e| {
 				error!("Failed to get last story part: {}", e);
@@ -241,18 +311,16 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
 
-		// Add the system to the beginning of the request messages
-		// This will not be persisted to the story part context messages to avoid saving aditional
-		// data. TODO: maybe have a flag to save it to context messages if needed by the
-		// application.
-		let mut request_messages = vec![ChatCompletionRequestMessageArgs::default()
-			.role(Role::System)
-			.content(system)
-			.build()
+		let mut request_messages: <Loreweaver<T> as Loom<T>>::RequestMessages =
+			<Loreweaver<T> as Loom<T>>::build_message(Self::Message {
+				role: Role::System,
+				content: system,
+			})
+			.await
 			.map_err(|e| {
-				error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
-				WeaveError::FailedPromptOpenAI(e)
-			})?];
+				error!("Failed to build system message: {}", e);
+				e
+			})?;
 
 		request_messages.extend(
 			story_part
@@ -270,22 +338,38 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 						.build()
 						.unwrap()
 				})
-				.collect::<Vec<ChatCompletionRequestMessage>>(),
+				.collect::<<Loreweaver<T> as Loom<T>>::RequestMessages>(),
 		);
 
-		let res = <Loreweaver<T> as secret_lore::Sealed<T>>::do_prompt(
-			&mut request_messages,
-			story_part.context_tokens,
+		let (tokens, words) = <Loreweaver<T> as Loom<T>>::max_tokens_and_words(
+			T::Model::get(),
 			override_max_context_tokens,
-		)
-		.await
-		.map_err(|e| {
-			error!("Failed to prompt ChatGPT: {}", e);
-			WeaveError::FailedPromptOpenAI(e)
-		})?;
+			story_part.context_tokens,
+		);
+
+		request_messages.push(
+			ChatCompletionRequestMessageArgs::default()
+				.content(format!("Respond with {} words or less", words))
+				.role(Role::System)
+				.build()
+				.map_err(|e| {
+					error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
+					e
+				})?,
+		);
+
+		let res = <Loreweaver<T> as Loom<T>>::prompt(&mut request_messages, tokens)
+			.await
+			.map_err(|e| {
+				error!("Failed to prompt ChatGPT: {}", e);
+				e
+			})?;
 
 		let response_content =
-			res.choices[0].clone().message.content.ok_or(WeaveError::FailedToGetContent)?;
+			<Loreweaver<T> as Loom<T>>::get_content(&res).await.map_err(|e| {
+				error!("Failed to get content from ChatGPT response: {}", e);
+				e
+			})?;
 
 		story_part.context_messages.push(ContextMessage {
 			role: "assistant".to_string(),
@@ -305,103 +389,63 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 
 		Ok(response_content)
 	}
-}
 
-mod secret_lore {
-	use crate::Get;
-	use async_openai::{
-		config::OpenAIConfig,
-		error::OpenAIError,
-		types::{
-			ChatCompletionRequestMessage, ChatCompletionRequestMessageArgs,
-			CreateChatCompletionRequestArgs, CreateChatCompletionResponse, Role,
-		},
-	};
-	use lazy_static::lazy_static;
-	use tokio::sync::RwLock;
-	use tracing::error;
-
-	use crate::models::Tokens;
-
-	use super::{models::Models, Config};
-
-	lazy_static! {
-		/// The OpenAI client to interact with the OpenAI API.
-		static ref OPENAI_CLIENT: RwLock<async_openai::Client<OpenAIConfig>> = RwLock::new(async_openai::Client::new());
+	async fn build_message(msg: MessageParams) -> Result<Self::RequestMessages> {
+		Ok(vec![ChatCompletionRequestMessageArgs::default()
+			.role(msg.role)
+			.content(msg.content)
+			.build()
+			.map_err(|e| {
+				error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
+				WeaveError::FailedPromptOpenAI(e)
+			})?])
 	}
 
-	/// Maximum percentage of tokens allowed to generate a summary.
-	///
-	/// This is not a fixed amount of tokens since the maximum amount of context tokens can change
-	/// depending on the model or user input.
-	const SUMMARY_PERCENTAGE: f32 = 0.1;
+	async fn prompt(
+		msgs: &mut Self::RequestMessages,
+		max_tokens: Tokens,
+	) -> Result<Self::Response> {
+		let request = CreateChatCompletionRequestArgs::default()
+			.model(T::Model::get().name())
+			.messages(msgs.to_owned())
+			.max_tokens(max_tokens)
+			.temperature(T::TEMPRATURE)
+			.presence_penalty(T::PRESENCE_PENALTY)
+			.frequency_penalty(T::FREQUENCY_PENALTY)
+			.build()?;
 
-	/// Token to word ratio.
-	///
-	/// Every token equates to 75% of a word.
-	const TOKEN_TO_WORD_RATIO: f32 = 0.75;
+		OPENAI_CLIENT.read().await.chat().create(request).await.map_err(|e| {
+			error!("Failed to prompt OpenAI: {}", e);
+			WeaveError::FailedPromptOpenAI(e).into()
+		})
+	}
 
-	pub trait Sealed<T: Config> {
-		/// The action to query ChatGPT with the supplied configurations and messages.
-		///
-		/// Auto injects a system message at the end of vec of messages to instruct ChatGPT to
-		/// respond with a certain number of words.
-		///
-		/// We do this here to avoid any other service from having to do this.
-		async fn do_prompt(
-			msgs: &mut Vec<ChatCompletionRequestMessage>,
-			context_tokens: Tokens,
-			override_max_tokens: Option<Tokens>,
-		) -> Result<CreateChatCompletionResponse, OpenAIError> {
-			let model = T::Model::get();
+	async fn get_content(res: &CreateChatCompletionResponse) -> Result<String> {
+		res.choices[0]
+			.clone()
+			.message
+			.content
+			.ok_or(WeaveError::FailedToGetContent.into())
+	}
 
-			let (tokens, words) =
-				Self::max_tokens_and_words(model, override_max_tokens, context_tokens);
+	fn max_tokens_and_words(
+		model: Models,
+		custom_max_tokens: Option<Tokens>,
+		context_tokens: Tokens,
+	) -> (Tokens, u16) {
+		let tokens_available = custom_max_tokens
+			.unwrap_or(Models::default_max_response_tokens(&model, context_tokens))
+			as f32 * SUMMARY_PERCENTAGE;
 
-			msgs.push(
-				ChatCompletionRequestMessageArgs::default()
-					.content(format!("Respond with {} words or less", words))
-					.role(Role::System)
-					.build()
-					.map_err(|e| {
-						error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
-						e
-					})?,
-			);
-
-			let request = CreateChatCompletionRequestArgs::default()
-				.max_tokens(tokens)
-				.temperature(T::Temperature::get())
-				.presence_penalty(T::PresencePenality::get())
-				.frequency_penalty(T::FrequencyPenality::get())
-				.model(model.name())
-				.messages(msgs.to_owned())
-				.build()?;
-
-			OPENAI_CLIENT.read().await.chat().create(request).await
-		}
-
-		/// Maximum number of words to return in a response based on maximum tokens of GPT model or
-		/// a `custom` supplied max token value.
-		///
-		/// Every token equates to 75% of a word.
-		fn max_tokens_and_words(
-			model: Models,
-			custom_max_tokens: Option<Tokens>,
-			context_tokens: Tokens,
-		) -> (Tokens, u16) {
-			let tokens_available = custom_max_tokens
-				.unwrap_or(Models::default_max_response_tokens(&model, context_tokens))
-				as f32 * SUMMARY_PERCENTAGE;
-
-			(tokens_available as Tokens, (tokens_available * TOKEN_TO_WORD_RATIO) as u16)
-		}
+		(tokens_available as Tokens, (tokens_available * TOKEN_WORD_RATIO) as Tokens)
 	}
 }
 
 pub mod models {
 	use clap::{builder::PossibleValue, ValueEnum};
 	use tiktoken_rs::p50k_base;
+
+	use crate::Get;
 
 	/// Tokens are a ChatGPT concept which represent normally a third of a word (or 75%).
 	pub type Tokens = u16;
@@ -472,6 +516,14 @@ pub mod models {
 				Self::GPT3 => 4_096,
 				Self::GPT4 => 8_192,
 			}
+		}
+	}
+
+	pub struct DefaultModel;
+
+	impl Get<Models> for DefaultModel {
+		fn get() -> Models {
+			Models::GPT3
 		}
 	}
 }
