@@ -66,20 +66,28 @@ pub trait TapestryId: Debug + Display + Clone + Send + Sync + 'static {
 
 /// A trait consisting of the main configuration parameters for [`Loreweaver`].
 pub trait Config {
-	// The sampling temperature, between 0 and 1. Higher values like 0.8 will make the output more
-	// random, while lower values like 0.2 will make it more focused and deterministic. If set to 0,
-	// the model will use log probability to automatically increase the temperature until certain
-	// thresholds are hit.
+	/// The sampling temperature, between 0 and 1. Higher values like 0.8 will make the output more
+	/// random, while lower values like 0.2 will make it more focused and deterministic. If set to
+	/// 0, the model will use log probability to automatically increase the temperature until
+	/// certain thresholds are hit.
+	///
+	/// Defaults to `0.0`
 	const TEMPRATURE: f32 = 0.0;
-	// Number between -2.0 and 2.0. Positive values penalize new tokens based on whether they appear
-	// in the text so far, increasing the model's likelihood to talk about new topics.
+	/// Number between -2.0 and 2.0. Positive values penalize new tokens based on whether they
+	/// appear in the text so far, increasing the model's likelihood to talk about new topics.
+	///
+	/// Defaults to `0.0`
 	const PRESENCE_PENALTY: f32 = 0.0;
-	// Number between -2.0 and 2.0. Positive values penalize new tokens based on their existing
-	// frequency in the text so far, decreasing the model's likelihood to repeat the same line
-	// verbatim.
+	/// Number between -2.0 and 2.0. Positive values penalize new tokens based on their existing
+	/// frequency in the text so far, decreasing the model's likelihood to repeat the same line
+	/// verbatim.
+	///
+	/// Defaults to `0.0`
 	const FREQUENCY_PENALTY: f32 = 0.0;
 
 	/// Getter for GPT model to use.
+	///
+	/// Defaults to [`models::DefaultModel`]
 	type Model: Get<Models> = models::DefaultModel;
 	/// Storage handler implementation for storing and retrieving tapestry fragments.
 	///
@@ -88,6 +96,9 @@ pub trait Config {
 	///
 	/// If you wish to implement your own storage backend, you can implement the methods from the
 	/// trait. [`Loreweaver`] does not care how you store the data and retrieve your data.
+	///
+	/// Defaults to [`TapestryChest`]. Using this default requires you to supply the `hostname`,
+	/// `port` and `credentials` to connect to your instance.
 	type TapestryChest: TapestryChestHandler = TapestryChest;
 }
 
@@ -311,10 +322,6 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 				e
 			})?;
 
-		// Add the system to the beginning of the request messages
-		// This will not be persisted to the story part context messages to avoid saving aditional
-		// data. TODO: maybe have a flag to save it to context messages if needed by the
-		// application.
 		request_messages.extend(
 			story_part
 				.context_messages

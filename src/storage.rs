@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use redis::{aio::Connection, AsyncCommands, Client};
+use redis::{aio::Connection, AsyncCommands, Client, ToRedisArgs};
+use serde::de::DeserializeOwned;
 use std::fmt::{Debug, Display};
 use tokio::sync::OnceCell;
 use tracing::{debug, error, instrument};
@@ -45,6 +46,13 @@ pub trait TapestryChestHandler {
 		tapestry_fragment: TapestryFragment,
 		_increment: bool,
 	) -> crate::Result<()>;
+	/// Save tapestry metadata.
+	///
+	/// Based on application use cases, you can add aditional data for a given [`TapestryId`]
+	async fn save_tapestry_metadata<TID: TapestryId, M: ToRedisArgs + Send + Sync>(
+		tapestry_id: TID,
+		metadata: M,
+	) -> crate::Result<()>;
 	/// Retrieves the last tapestry fragment, or a fragment at a specified instance.
 	///
 	/// # Parameters
@@ -62,8 +70,15 @@ pub trait TapestryChestHandler {
 		tapestry_id: TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment>>;
+	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
+		tapestry_id: TID,
+		instance: Option<u64>,
+	) -> crate::Result<Option<M>>;
 }
 
+/// Default implementation of Loreweaver
+///
+/// Storing and retrieving data using a Redis instance.
 pub struct TapestryChest;
 
 #[async_trait]
@@ -74,6 +89,60 @@ impl TapestryChestHandler for TapestryChest {
 		tapestry_id: TID,
 		tapestry_fragment: TapestryFragment,
 		_increment: bool,
+	) -> crate::Result<()> {
+		let client = get_client().await.expect("Failed to get redis client");
+		let mut con = client.get_async_connection().await.expect("Failed to get redis connection");
+		debug!("Connected to Redis");
+
+		let base_key: &String = &tapestry_id.base_key();
+
+		let instance = match get_score_from_last_zset_member(&mut con, base_key).await? {
+			Some(instance) => instance,
+			None => {
+				con.zadd(base_key, 0, 0).await.map_err(|e| {
+					error!("Failed to save story part to Redis: {}", e);
+					StorageError::Redis(e)
+				})?;
+
+				0
+			},
+		};
+
+		// TODO: increment score by 1 if `_increment` is true
+
+		let key = format!("{base_key}:{instance}");
+
+		con.hset(&key, "context_tokens", tapestry_fragment.context_tokens)
+			.await
+			.map_err(|e| {
+				error!("Failed to save \"context_tokens\" member to {} key: {}", key, e);
+				StorageError::Redis(e)
+			})?;
+
+		debug!("Saved \"context_tokens\" member to {} key", key);
+
+		con.hset(
+			&key,
+			"context_messages",
+			serde_json::to_vec(&tapestry_fragment.context_messages).map_err(|e| {
+				error!("Failed to serialize story part context_messages: {}", e);
+				StorageError::Parsing
+			})?,
+		)
+		.await
+		.map_err(|e| {
+			error!("Failed to save \"context_messages\" member to {} key: {}", key, e);
+			StorageError::Redis(e)
+		})?;
+
+		debug!("Saved \"context_messages\" member to {} key", key);
+
+		Ok(())
+	}
+
+	async fn save_tapestry_metadata<TID: TapestryId, M: ToRedisArgs + Send + Sync>(
+		tapestry_id: TID,
+		metadata: M,
 	) -> crate::Result<()> {
 		let client = get_client().await.expect("Failed to get redis client");
 		let mut con = client.get_async_connection().await.expect("Failed to get redis connection");
@@ -101,32 +170,12 @@ impl TapestryChestHandler for TapestryChest {
 
 		let key = format!("{base_key}:{instance}");
 
-		debug!("Saved \"players\" member to {} key", key);
-
-		con.hset(&key, "context_tokens", tapestry_fragment.context_tokens)
-			.await
-			.map_err(|e| {
-				error!("Failed to save \"context_tokens\" member to {} key: {}", key, e);
-				StorageError::Redis(e)
-			})?;
-
-		debug!("Saved \"context_tokens\" member to {} key", key);
-
-		con.hset(
-			&key,
-			"context_messages",
-			serde_json::to_vec(&tapestry_fragment.context_messages).map_err(|e| {
-				error!("Failed to serialize story part context_messages: {}", e);
-				StorageError::Parsing
-			})?,
-		)
-		.await
-		.map_err(|e| {
-			error!("Failed to save \"context_messages\" member to {} key: {}", key, e);
+		con.hset(&key, "metadata", metadata).await.map_err(|e| {
+			error!("Failed to save \"metadata\" member to {} key: {}", key, e);
 			StorageError::Redis(e)
 		})?;
 
-		debug!("Saved \"context_messages\" member to {} key", key);
+		debug!("Saved \"metadata\" member to {} key", key);
 
 		Ok(())
 	}
@@ -180,6 +229,39 @@ impl TapestryChestHandler for TapestryChest {
 		};
 
 		Ok(Some(tapestry_fragment))
+	}
+
+	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
+		tapestry_id: TID,
+		instance: Option<u64>,
+	) -> crate::Result<Option<M>> {
+		let client = get_client().await.expect("Failed to get redis client");
+		let mut con = client.get_async_connection().await.expect("Failed to get redis connection");
+		debug!("Connected to Redis");
+
+		let base_key = &tapestry_id.base_key();
+
+		let instance = match instance {
+			Some(instance) => instance,
+			None => match get_score_from_last_zset_member(&mut con, base_key).await? {
+				Some(instance) => instance,
+				None => return Ok(None),
+			},
+		};
+
+		let key = format!("{base_key}:{instance}");
+
+		let metadata_raw: Vec<u8> = con.hget(&key, "context_messages").await.map_err(|e| {
+			error!("Failed to get \"context_messages\" member from {} key: {}", key, e);
+			StorageError::Redis(e)
+		})?;
+
+		let tapestry_metadata = serde_json::from_slice::<M>(&metadata_raw).map_err(|e| {
+			error!("Failed to parse story part context_messages: {}", e);
+			StorageError::Parsing
+		})?;
+
+		Ok(Some(tapestry_metadata))
 	}
 }
 
