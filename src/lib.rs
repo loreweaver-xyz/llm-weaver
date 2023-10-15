@@ -141,8 +141,13 @@ pub struct TapestryFragment {
 /// abstracting the logic from the services calling them.
 #[async_trait]
 pub trait Loom<T: Config> {
+	/// Represents an object to use for constructing [`Loom::RequestMessages`] from.
 	type Message;
+	/// Represents the request message type used to prompt a certain LLM.
+	///
+	/// This varies between LLMs and their libraries.
 	type RequestMessages;
+	/// Represents the response type returned by the LLM library.
 	type Response;
 
 	/// Prompt Loreweaver for a response for [`WeavingID`].
@@ -364,15 +369,15 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 				let words_summary = tokens_left as f32 * TOKEN_WORD_RATIO;
 
 				messages.push(
-				ChatCompletionRequestMessageArgs::default()
-					.content(format!("Generate a summary of the entire adventure so far. Respond with {} words or less", words_summary))
-					.role(Role::System)
-					.build()
-					.map_err(|e| {
-						error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
-						e
-					})?
-			);
+					ChatCompletionRequestMessageArgs::default()
+						.content(format!("Generate a summary of the entire adventure so far. Respond with {} words or less", words_summary))
+						.role(Role::System)
+						.build()
+						.map_err(|e| {
+							error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
+							e
+						})?
+				);
 
 				let res = <Loreweaver<T> as Loom<T>>::prompt(&mut messages, tokens_left)
 					.await
