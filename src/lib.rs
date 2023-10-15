@@ -66,6 +66,11 @@ pub trait TapestryId: Debug + Display + Clone + Send + Sync + 'static {
 
 /// A trait consisting of the main configuration parameters for [`Loreweaver`].
 pub trait Config {
+	/// Maximum percentage of tokens allowed to generate a summary.
+	///
+	/// This is not a fixed amount of tokens since the maximum amount of context tokens can change
+	/// depending on the model or custom max tokens.
+	const SUMMARY_PERCENTAGE: f32 = 0.1;
 	/// The sampling temperature, between 0 and 1. Higher values like 0.8 will make the output more
 	/// random, while lower values like 0.2 will make it more focused and deterministic. If set to
 	/// 0, the model will use log probability to automatically increase the temperature until
@@ -248,12 +253,6 @@ impl From<String> for WrapperRole {
 	}
 }
 
-/// Maximum percentage of tokens allowed to generate a summary.
-///
-/// This is not a fixed amount of tokens since the maximum amount of context tokens can change
-/// depending on the model or user input.
-const SUMMARY_PERCENTAGE: f32 = 0.1;
-
 /// Token to word ratio.
 ///
 /// Every token equates to 75% of a word.
@@ -433,9 +432,9 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		custom_max_tokens: Option<Tokens>,
 		context_tokens: Tokens,
 	) -> (Tokens, u16) {
-		let tokens_available = custom_max_tokens
-			.unwrap_or(Models::default_max_response_tokens(&model, context_tokens))
-			as f32 * SUMMARY_PERCENTAGE;
+		let tokens_available = (custom_max_tokens.unwrap_or(model.max_context_tokens()) -
+			context_tokens) as f32 *
+			T::SUMMARY_PERCENTAGE;
 
 		(tokens_available as Tokens, (tokens_available * TOKEN_WORD_RATIO) as Tokens)
 	}
@@ -497,17 +496,6 @@ pub mod models {
 				Self::GPT3 => "gpt-3.5-turbo",
 				Self::GPT4 => "gpt-4",
 			}
-		}
-
-		/// Default maximum tokens to respond with for a ChatGPT prompt.
-		///
-		/// This would normally be used when prompting ChatGPT API and specifying the maximum tokens
-		/// to return.
-		///
-		/// `tokens_in_context` parameter is the current number of tokens that are part of the
-		/// context. This should not surpass the [`max_context_tokens`]
-		pub fn default_max_response_tokens(model: &Models, tokens_in_context: Tokens) -> Tokens {
-			(model.max_context_tokens() - tokens_in_context) / 3
 		}
 
 		/// Maximum number of tokens that can be processed at once by ChatGPT.
