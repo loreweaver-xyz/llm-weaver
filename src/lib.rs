@@ -182,11 +182,9 @@ pub trait Loom<T: Config> {
 	async fn get_content(res: &Self::Response) -> Result<String>;
 
 	/// Maximum number tokens and words allowed for response.
-	fn max_tokens_and_words(
-		model: Models,
-		custom_max_tokens: Option<Tokens>,
-		context_tokens: Tokens,
-	) -> (Tokens, u16);
+	///
+	/// None is returned if the `context_tokens` exceed maximum amount of available tokens.
+	fn tokens_available(model: Models, custom_max_tokens: Option<Tokens>) -> Tokens;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -301,6 +299,106 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			})?
 			.unwrap_or_default();
 
+		let mut messages: <Loreweaver<T> as Loom<T>>::RequestMessages = <Loreweaver<T> as Loom<
+			T,
+		>>::build_message(
+			Self::Message { role: Role::System, content: system },
+		)
+		.await
+		.map_err(|e| {
+			error!("Failed to build system message: {}", e);
+			e
+		})?;
+
+		let tokens_available = <Loreweaver<T> as Loom<T>>::tokens_available(
+			T::Model::get(),
+			override_max_context_tokens,
+		);
+
+		// generate summary and start new tapestry instance if context tokens are exceed maximum
+		// amount of allowed tokens
+		let request_messages = match tokens_available <= story_part.context_tokens {
+			false => {
+				messages.extend(
+					story_part
+						.context_messages
+						.iter()
+						.map(|msg: &ContextMessage| {
+							ChatCompletionRequestMessageArgs::default()
+								.content(msg.content.clone())
+								.role(Into::<WrapperRole>::into(msg.role.clone()))
+								.name(match msg.role.as_str() {
+									"system" => "Loreweaver".to_string(),
+									"assistant" | "user" => msg.account_id.clone(),
+									_ => WeaveError::BadOpenAIRole(msg.role.clone()).to_string(),
+								})
+								.build()
+								.unwrap()
+						})
+						.collect::<<Loreweaver<T> as Loom<T>>::RequestMessages>(),
+				);
+				messages
+			},
+			true => {
+				story_part.context_messages.truncate(story_part.context_messages.len() - 1);
+				messages.extend(
+					story_part
+						.context_messages
+						.iter()
+						.map(|msg: &ContextMessage| {
+							ChatCompletionRequestMessageArgs::default()
+								.content(msg.content.clone())
+								.role(Into::<WrapperRole>::into(msg.role.clone()))
+								.name(match msg.role.as_str() {
+									"system" => "Loreweaver".to_string(),
+									"assistant" | "user" => msg.account_id.clone(),
+									_ => WeaveError::BadOpenAIRole(msg.role.clone()).to_string(),
+								})
+								.build()
+								.unwrap()
+						})
+						.collect::<<Loreweaver<T> as Loom<T>>::RequestMessages>(),
+				);
+
+				let tokens_left = tokens_available - story_part.context_tokens;
+				let words_summary = tokens_left as f32 * TOKEN_WORD_RATIO;
+
+				messages.push(
+				ChatCompletionRequestMessageArgs::default()
+					.content(format!("Generate a summary of the entire adventure so far. Respond with {} words or less", words_summary))
+					.role(Role::System)
+					.build()
+					.map_err(|e| {
+						error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
+						e
+					})?
+			);
+
+				let res = <Loreweaver<T> as Loom<T>>::prompt(&mut messages, tokens_left)
+					.await
+					.map_err(|e| {
+						error!("Failed to prompt ChatGPT: {}", e);
+						e
+					})?;
+
+				let response_content =
+					<Loreweaver<T> as Loom<T>>::get_content(&res).await.map_err(|e| {
+						error!("Failed to get content from ChatGPT response: {}", e);
+						e
+					})?;
+
+				<Loreweaver<T> as Loom<T>>::build_message(Self::Message {
+					role: Role::System,
+					content: format!("{system} \n\"\"\"\n {response_content}"),
+				})
+				.await
+				.map_err(|e| {
+					error!("Failed to build system message: {}", e);
+					e
+				})?
+			},
+		};
+
 		let account_id = account_id.clone().unwrap_or("".to_string());
 
 		story_part.context_messages.push(ContextMessage {
@@ -309,42 +407,6 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			content: msg.clone(),
 			timestamp: chrono::Utc::now().to_rfc3339(),
 		});
-
-		let mut request_messages: <Loreweaver<T> as Loom<T>>::RequestMessages =
-			<Loreweaver<T> as Loom<T>>::build_message(Self::Message {
-				role: Role::System,
-				content: system,
-			})
-			.await
-			.map_err(|e| {
-				error!("Failed to build system message: {}", e);
-				e
-			})?;
-
-		request_messages.extend(
-			story_part
-				.context_messages
-				.iter()
-				.map(|msg: &ContextMessage| {
-					ChatCompletionRequestMessageArgs::default()
-						.content(msg.content.clone())
-						.role(Into::<WrapperRole>::into(msg.role.clone()))
-						.name(match msg.role.as_str() {
-							"system" => "Loreweaver".to_string(),
-							"assistant" | "user" => msg.account_id.clone(),
-							_ => WeaveError::BadOpenAIRole(msg.role.clone()).to_string(),
-						})
-						.build()
-						.unwrap()
-				})
-				.collect::<<Loreweaver<T> as Loom<T>>::RequestMessages>(),
-		);
-
-		let (tokens, words) = <Loreweaver<T> as Loom<T>>::max_tokens_and_words(
-			T::Model::get(),
-			override_max_context_tokens,
-			story_part.context_tokens,
-		);
 
 		request_messages.push(
 			ChatCompletionRequestMessageArgs::default()
@@ -427,16 +489,9 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			.ok_or(WeaveError::FailedToGetContent.into())
 	}
 
-	fn max_tokens_and_words(
-		model: Models,
-		custom_max_tokens: Option<Tokens>,
-		context_tokens: Tokens,
-	) -> (Tokens, u16) {
-		let tokens_available = (custom_max_tokens.unwrap_or(model.max_context_tokens()) -
-			context_tokens) as f32 *
-			T::SUMMARY_PERCENTAGE;
-
-		(tokens_available as Tokens, (tokens_available * TOKEN_WORD_RATIO) as Tokens)
+	fn tokens_available(model: Models, custom_max_tokens: Option<Tokens>) -> Tokens {
+		(custom_max_tokens.unwrap_or(model.max_context_tokens()) as f32 * T::SUMMARY_PERCENTAGE)
+			as Tokens
 	}
 }
 
