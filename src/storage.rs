@@ -88,7 +88,7 @@ impl TapestryChestHandler for TapestryChest {
 	async fn save_tapestry_fragment<TID: TapestryId>(
 		tapestry_id: TID,
 		tapestry_fragment: TapestryFragment,
-		_increment: bool,
+		increment: bool,
 	) -> crate::Result<()> {
 		let client = get_client().await.expect("Failed to get redis client");
 		let mut con = client.get_async_connection().await.expect("Failed to get redis connection");
@@ -96,7 +96,7 @@ impl TapestryChestHandler for TapestryChest {
 
 		let base_key: &String = &tapestry_id.base_key();
 
-		let instance = match get_score_from_last_zset_member(&mut con, base_key).await? {
+		let mut instance = match get_score_from_last_zset_member(&mut con, base_key).await? {
 			Some(instance) => instance,
 			None => {
 				con.zadd(base_key, 0, 0).await.map_err(|e| {
@@ -108,7 +108,16 @@ impl TapestryChestHandler for TapestryChest {
 			},
 		};
 
-		// TODO: increment score by 1 if `_increment` is true
+		// increment score by 1
+		// this is to ensure that a we save and access new "instances" of TapestryFragments
+		if increment {
+			con.zincr(base_key, 0, 1).await.map_err(|e| {
+				error!("Failed to save story part to Redis: {}", e);
+				StorageError::Redis(e)
+			})?;
+
+			instance += 1;
+		}
 
 		let key = format!("{base_key}:{instance}");
 
