@@ -182,8 +182,7 @@ pub trait Loom<T: Config> {
 	fn build_messages(msg: Vec<Self::Message>) -> Result<Self::RequestMessages>;
 
 	/// The action to query ChatGPT with the supplied configurations and messages.
-	async fn prompt(msgs: &mut Self::RequestMessages, max_tokens: Tokens)
-		-> Result<Self::Response>;
+	async fn prompt(msgs: Self::RequestMessages, max_tokens: Tokens) -> Result<Self::Response>;
 
 	/// Get the content from the response.
 	async fn get_content(res: &Self::Response) -> Result<String>;
@@ -296,20 +295,30 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		msg: String,
 		account_id: Option<String>,
 	) -> Result<String> {
-		// ensure that the custom max tokens is not greater than the model's max tokens
+		let build_messages = <Loreweaver<T> as Loom<T>>::build_messages;
+		let prompt = <Loreweaver<T> as Loom<T>>::prompt;
+
+		// Early return on invalid token configuration
+		let model = T::Model::get();
 		if let Some(custom_max_tokens) = override_max_context_tokens {
-			let model = T::Model::get();
 			if custom_max_tokens > model.max_context_tokens() {
 				return Err(Box::new(WeaveError::BadOpenAIRole(format!(
-					"Custom max tokens cannot be greater than model {} max tokens: {}",
+					"Custom max tokens cannot exceed model's max tokens ({}): {}",
 					model.name(),
 					model.max_context_tokens()
 				))))
 			}
 		}
 
+		let build_context_message = |role: String,
+		                             content: String,
+		                             account_id: String|
+		 -> ContextMessage {
+			ContextMessage { role, account_id, content, timestamp: chrono::Utc::now().to_rfc3339() }
+		};
+
 		// system request message pre built to extend to vecs within this function
-		let system_req_msg = <Loreweaver<T> as Loom<T>>::build_messages(vec![LoomMessage::<T> {
+		let system_req_msg = build_messages(vec![LoomMessage::<T> {
 			role: Role::System,
 			content: system.clone(),
 			name: None,
@@ -329,25 +338,27 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		// base request messages
 		// in the case where we generate a summary or simply go straight to prompting for a
 		// response, we need to build this iterator of request messages
-		let request_messages = system_req_msg.clone().into_iter().chain(
-			story_part
-				.context_messages
-				.clone()
-				.into_iter()
-				.map(|msg: ContextMessage| {
-					ChatCompletionRequestMessageArgs::default()
-						.content(msg.content.clone())
-						.role(Into::<WrapperRole>::into(msg.role.clone()))
-						.name(match msg.role.as_str() {
-							"system" => "".to_string(),
-							"assistant" | "user" => msg.account_id.clone(),
-							_ => WeaveError::BadOpenAIRole(msg.role.clone()).to_string(),
-						})
-						.build()
-						.unwrap()
-				})
-				.collect::<Vec<ChatCompletionRequestMessage>>(),
-		);
+		let request_messages = system_req_msg
+			.clone()
+			.into_iter()
+			.chain(story_part.context_messages.clone().into_iter().flat_map(
+				|msg: ContextMessage| {
+					// Assuming build_messages returns a
+					// Result<Vec<ChatCompletionRequestMessage>>
+					build_messages(vec![LoomMessage::<T> {
+						role: WrapperRole::from(msg.role.clone()).into(),
+						content: msg.content.clone(),
+						name: match msg.role.as_str() {
+							SYSTEM_ROLE => None,
+							ASSISTANT_ROLE | USER_ROLE => Some(msg.account_id.clone()),
+							_ => panic!("Bad OpenAI role"),
+						},
+					}])
+					.expect("Failed to build messages")
+					.into_iter() // Convert the Vec to an Iterator
+				},
+			))
+			.collect::<LoomRequestMessages<T>>();
 
 		// generate summary and start new tapestry instance if context tokens are exceed maximum +
 		// the new message token count exceed the amount of allowed tokens
@@ -358,47 +369,38 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 				let tokens_left = tokens_available - story_part.context_tokens;
 				let words_summary = tokens_left as f32 * TOKEN_WORD_RATIO;
 
-				let mut gen_summary_prompt = request_messages.clone().into_iter().chain(
-					vec![ChatCompletionRequestMessageArgs::default()
-						.role(Role::System)
-						.content(format!("Generate a summary of the entire adventure so far. Respond with {} words or less", words_summary))
-						.build()
-						.map_err(|e| {
-							error!("Failed to build ChatCompletionRequestMessageArgs: {}", e);
-							e
-						})?]
-				).collect();
+				let gen_summary_prompt = build_messages(vec![LoomMessage::<T> {
+					role: Role::System,
+					content: format!("Generate a summary of the entire adventure so far. Respond with {} words or less", words_summary),
+					name: None,
+				}])?;
 
-				let res = <Loreweaver<T> as Loom<T>>::prompt(&mut gen_summary_prompt, tokens_left)
-					.await?;
+				let res = prompt(gen_summary_prompt, tokens_left).await?;
 
 				let summary_response_content =
 					<Loreweaver<T> as Loom<T>>::get_content(&res).await?;
 
-				let summary_req_msg =
-					<Loreweaver<T> as Loom<T>>::build_messages(vec![LoomMessage::<T> {
-						role: Role::System,
-						content: format!("\n\"\"\"\n {}", summary_response_content),
-						name: None,
-					}])?;
+				let summary_req_msg = build_messages(vec![LoomMessage::<T> {
+					role: Role::System,
+					content: format!("\n\"\"\"\n {}", summary_response_content),
+					name: None,
+				}])?;
 
 				(
 					true,
 					TapestryFragment {
 						context_tokens: summary_response_content.count_tokens(),
 						context_messages: vec![
-							ContextMessage {
-								role: SYSTEM_ROLE.to_string(),
-								account_id: Default::default(),
-								content: system,
-								timestamp: chrono::Utc::now().to_rfc3339(),
-							},
-							ContextMessage {
-								role: SYSTEM_ROLE.to_string(),
-								account_id: Default::default(),
-								content: summary_response_content,
-								timestamp: chrono::Utc::now().to_rfc3339(),
-							},
+							build_context_message(
+								SYSTEM_ROLE.to_string(),
+								system.clone(),
+								Default::default(),
+							),
+							build_context_message(
+								SYSTEM_ROLE.to_string(),
+								summary_response_content.clone(),
+								Default::default(),
+							),
 						],
 					},
 					system_req_msg
@@ -407,7 +409,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 						.collect::<LoomRequestMessages<T>>(),
 				)
 			},
-			false => (false, story_part, request_messages.collect()),
+			false => (false, story_part, request_messages),
 		};
 
 		let max_tokens = tokens_available - story_part.context_tokens - msg.count_tokens();
@@ -440,12 +442,10 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		]);
 
 		// get response object from prompt
-		let res = <Loreweaver<T> as Loom<T>>::prompt(&mut request_messages, max_tokens)
-			.await
-			.map_err(|e| {
-				error!("Failed to prompt ChatGPT: {}", e);
-				e
-			})?;
+		let res = prompt(request_messages, max_tokens).await.map_err(|e| {
+			error!("Failed to prompt ChatGPT: {}", e);
+			e
+		})?;
 
 		// get response content from prompt
 		let response_content =
@@ -455,20 +455,18 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			})?;
 
 		// add new user message to the story_part to save to storage
-		story_part.context_messages.push(ContextMessage {
-			role: USER_ROLE.to_string(),
-			account_id: account_id.clone(),
-			content: msg.clone(),
-			timestamp: chrono::Utc::now().to_rfc3339(),
-		});
+		story_part.context_messages.push(build_context_message(
+			USER_ROLE.to_string(),
+			msg.clone(),
+			account_id.clone(),
+		));
 
 		// push response to the story_part to save to storage
-		story_part.context_messages.push(ContextMessage {
-			role: ASSISTANT_ROLE.to_string(),
-			account_id: account_id.clone(),
-			content: response_content.clone(),
-			timestamp: chrono::Utc::now().to_rfc3339(),
-		});
+		story_part.context_messages.push(build_context_message(
+			ASSISTANT_ROLE.to_string(),
+			response_content.clone(),
+			account_id.clone(),
+		));
 
 		debug!("Saving story part: {:?}", story_part.context_messages);
 
@@ -500,10 +498,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			.collect()
 	}
 
-	async fn prompt(
-		msgs: &mut LoomRequestMessages<T>,
-		max_tokens: Tokens,
-	) -> Result<LoomResponse<T>> {
+	async fn prompt(msgs: LoomRequestMessages<T>, max_tokens: Tokens) -> Result<LoomResponse<T>> {
 		let request = CreateChatCompletionRequestArgs::default()
 			.model(T::Model::get().name())
 			.messages(msgs.to_owned())
