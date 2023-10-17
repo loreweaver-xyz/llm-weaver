@@ -44,7 +44,7 @@ pub trait TapestryChestHandler {
 	async fn save_tapestry_fragment<TID: TapestryId>(
 		tapestry_id: TID,
 		tapestry_fragment: TapestryFragment,
-		_increment: bool,
+		increment: bool,
 	) -> crate::Result<()>;
 	/// Save tapestry metadata.
 	///
@@ -162,12 +162,6 @@ impl TapestryChestHandler for TapestryChest {
 		let instance = match get_score_from_last_zset_member(&mut con, base_key).await? {
 			Some(instance) => instance,
 			None => {
-				// TODO
-				// con.zincr(&base_key, 0, 1).await.map_err(|e| {
-				// 	error!("Failed to save story part to Redis: {}", e);
-				// 	WeaveError::Storage
-				// })?;
-
 				con.zadd(base_key, 0, 0).await.map_err(|e| {
 					error!("Failed to save story part to Redis: {}", e);
 					StorageError::Redis(e)
