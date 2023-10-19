@@ -101,7 +101,7 @@ impl TapestryChestHandler for TapestryChest {
 			Some(instance) => instance,
 			None => {
 				con.zadd(base_key, 0, 0).await.map_err(|e| {
-					error!("Failed to save story part to Redis: {}", e);
+					error!("Failed to save tapestry fragment to Redis: {}", e);
 					StorageError::Redis(e)
 				})?;
 
@@ -113,7 +113,7 @@ impl TapestryChestHandler for TapestryChest {
 		// this is to ensure that a we save and access new "instances" of TapestryFragments
 		if increment {
 			con.zincr(base_key, 0, 1).await.map_err(|e| {
-				error!("Failed to save story part to Redis: {}", e);
+				error!("Failed to save tapestry fragment to Redis: {}", e);
 				StorageError::Redis(e)
 			})?;
 
@@ -135,7 +135,7 @@ impl TapestryChestHandler for TapestryChest {
 			&key,
 			"context_messages",
 			serde_json::to_vec(&tapestry_fragment.context_messages).map_err(|e| {
-				error!("Failed to serialize story part context_messages: {}", e);
+				error!("Failed to serialize tapestry fragment context_messages: {}", e);
 				StorageError::Parsing
 			})?,
 		)
@@ -164,7 +164,7 @@ impl TapestryChestHandler for TapestryChest {
 			Some(instance) => instance,
 			None => {
 				con.zadd(base_key, 0, 0).await.map_err(|e| {
-					error!("Failed to save story part to Redis: {}", e);
+					error!("Failed to save tapestry fragment to Redis: {}", e);
 					StorageError::Redis(e)
 				})?;
 
@@ -225,7 +225,7 @@ impl TapestryChestHandler for TapestryChest {
 
 				serde_json::from_slice::<Vec<ContextMessage>>(&context_messages_raw).map_err(
 					|e| {
-						error!("Failed to parse story part context_messages: {}", e);
+						error!("Failed to parse tapestry fragment context_messages: {}", e);
 						StorageError::Parsing
 					},
 				)?
@@ -261,7 +261,7 @@ impl TapestryChestHandler for TapestryChest {
 		})?;
 
 		let tapestry_metadata = serde_json::from_slice::<M>(&metadata_raw).map_err(|e| {
-			error!("Failed to parse story part context_messages: {}", e);
+			error!("Failed to parse tapestry fragment context_messages: {}", e);
 			StorageError::Parsing
 		})?;
 
@@ -304,7 +304,7 @@ async fn get_score_from_last_zset_member(
 ) -> Result<Option<u64>, StorageError> {
 	debug!("Executing ZRANGE_WITHSCORES {}...", base_key);
 	let member_score: Vec<String> = con.zrange_withscores(base_key, -1, -1).await.map_err(|e| {
-		error!("Failed to save story part to Redis: {}", e);
+		error!("Failed to save tapestry fragment to Redis: {}", e);
 		StorageError::Redis(e)
 	})?;
 	debug!("Result ZRANGE_WITHSCORES: {:?}", member_score);

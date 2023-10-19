@@ -14,8 +14,11 @@
 //! Effective utilization of Loreweaver necessitates the implementation of the [`Config`] trait,
 //! ensuring the provision of mandatory types not preset by default.
 //!
-//! For immediate use of this crate, a functioning Redis instance is necessary, with the following
-//! environment variables set:
+//! For immediate use of this library you must:
+//! - open an account on [openai](https://platform.openai.com/) with an api key
+//! - run a Redis instance
+//!
+//! You must set the following environment variables:
 //!
 //! - `OPENAI_API_KEY`
 //! - `REDIS_PROTOCOL`
@@ -237,24 +240,24 @@ pub struct ContextMessage {
 	pub timestamp: String,
 }
 
-/// Represents a single part of a story containing a list of messages along with other metadata.
+/// Represents a single part of a conversation containing a list of messages along with other
+/// metadata.
 ///
 /// ChatGPT can only hold a limited amount of tokens in a the entire message history/context.
-/// Therefore, at every [`Loom::prompt`] execution, we must keep track of the number of
-/// `context_tokens` in the current story part and if it exceeds the maximum number of tokens
-/// allowed for the current GPT [`Models`], then we must generate a summary of the current story
-/// part and use that as the starting point for the next story part. This is one of the biggest
-/// challenges for Loreweaver to keep a consistent narrative throughout the many story parts.
+/// Therefore, at every [`Loom::prompt`] execution, the total number of `context_tokens` is tracked
+/// and if it exceeds the maximum number of tokens allowed for the current GPT [`Models`], then we
+/// must generate a summary of the `context_messages` and use that as the starting point for the
+/// next `TapestryFragment`.
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct TapestryFragment {
-	/// Total number of _GPT tokens_ in the story part.
+	/// Total number of _GPT tokens_ in the `context_messages`.
 	pub context_tokens: Tokens,
-	/// List of [`ContextMessage`]s in the story part.
+	/// List of [`ContextMessage`]s that represents the message history.
 	pub context_messages: Vec<ContextMessage>,
 }
 
 impl TapestryFragment {
-	/// Add a [`ContextMessage`] to the story part.
+	/// Add a [`ContextMessage`] to the `context_messages` list.
 	///
 	/// Also increments the `context_tokens` by the number of tokens in the message.
 	fn add_message(&mut self, msg: Vec<ContextMessage>) {
@@ -325,11 +328,11 @@ pub trait Loom<T: Config> {
 	/// Generates the summary of the current [`TapestryFragment`] instance.
 	///
 	/// Returns a tuple of:
-	/// 		- The new story part to persist.
+	/// 		- The new [`TapestryFragment`] instance to save to storage.
 	/// 		- The new request messages to prompt ChatGPT with.
 	async fn generate_summary(
 		max_tokens_with_summary: Tokens,
-		story_part: TapestryFragment,
+		tapestry_fragment: TapestryFragment,
 		system_req_msg: Self::RequestMessages,
 	) -> Result<(TapestryFragment, Self::RequestMessages)>;
 }
@@ -459,7 +462,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		}])?;
 
 		// get latest tapestry fragment instance from storage
-		let story_part = T::TapestryChest::get_tapestry_fragment(tapestry_id.clone(), None)
+		let tapestry_fragment = T::TapestryChest::get_tapestry_fragment(tapestry_id.clone(), None)
 			.await?
 			.unwrap_or_default();
 
@@ -475,7 +478,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		let request_messages = system_req_msg
 			.clone()
 			.into_iter()
-			.chain(story_part.context_messages.clone().into_iter().flat_map(
+			.chain(tapestry_fragment.context_messages.clone().into_iter().flat_map(
 				|msg: ContextMessage| {
 					// Assuming build_messages returns a
 					// Result<Vec<ChatCompletionRequestMessage>>
@@ -493,20 +496,21 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		// generate summary and start new tapestry instance if context tokens are exceed maximum +
 		// the new message token count exceed the amount of allowed tokens
 		let generate_summary =
-			max_tokens_with_summary <= story_part.context_tokens + msg.count_tokens();
-		let (mut story_part_to_persist, mut request_messages) = match generate_summary {
+			max_tokens_with_summary <= tapestry_fragment.context_tokens + msg.count_tokens();
+		let (mut tapestry_fragment_to_persist, mut request_messages) = match generate_summary {
 			true =>
 				<Loreweaver<T> as Loom<T>>::generate_summary(
 					max_tokens_with_summary,
-					story_part,
+					tapestry_fragment,
 					system_req_msg,
 				)
 				.await?,
-			false => (story_part, request_messages),
+			false => (tapestry_fragment, request_messages),
 		};
 
-		let max_tokens =
-			max_tokens_with_summary - story_part_to_persist.context_tokens - msg.count_tokens();
+		let max_tokens = max_tokens_with_summary -
+			tapestry_fragment_to_persist.context_tokens -
+			msg.count_tokens();
 
 		// add new user message to request_messages which will be used to prompt with
 		// also include the system message to indicate how many words the response should be
@@ -539,8 +543,8 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 				e
 			})?;
 
-		// persist new user message and response to the story_part
-		story_part_to_persist.add_message(vec![
+		// persist new user message and response to the
+		tapestry_fragment_to_persist.add_message(vec![
 			build_context_message(USER_ROLE.to_string(), msg.clone(), account_id.clone()),
 			build_context_message(
 				ASSISTANT_ROLE.to_string(),
@@ -549,18 +553,18 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			),
 		]);
 
-		debug!("Saving story part: {:?}", story_part_to_persist);
+		debug!("Saving tapestry fragment: {:?}", tapestry_fragment_to_persist);
 
 		// save tapestry fragment to storage
-		// when summarized, the story_part will be saved to a new instance of the tapestry fragment
+		// when summarized, the tapestry_fragment will be saved under a new instance
 		T::TapestryChest::save_tapestry_fragment(
 			tapestry_id,
-			story_part_to_persist,
+			tapestry_fragment_to_persist,
 			generate_summary,
 		)
 		.await
 		.map_err(|e| {
-			error!("Failed to save story part: {}", e);
+			error!("Failed to save tapestry fragment: {}", e);
 			e
 		})?;
 
@@ -617,10 +621,10 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 
 	async fn generate_summary(
 		max_tokens_with_summary: Tokens,
-		story_part: TapestryFragment,
+		tapestry_fragment: TapestryFragment,
 		system_req_msg: LoomRequestMessages<T>,
 	) -> Result<(TapestryFragment, LoomRequestMessages<T>)> {
-		let tokens_left = max_tokens_with_summary.saturating_sub(story_part.context_tokens);
+		let tokens_left = max_tokens_with_summary.saturating_sub(tapestry_fragment.context_tokens);
 		if tokens_left == 0 {
 			return Err(Box::new(WeaveError::BadOpenAIRole(format!(
 				"Tokens left cannot be 0: {}",

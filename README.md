@@ -28,7 +28,7 @@ The library is designed to be as flexible as possible, allowing you to easily in
 
 ## How to Use
 
-Follow the crate level documentation in [lib.rs](https://docs.rs/loreweaver/latest/loreweaver/) for a detailed explanation of how to use the library.
+Follow the [crate level documentation](https://docs.rs/loreweaver/latest/loreweaver/) for a detailed explanation of how to use the library.
 
 ## Contribution
 
