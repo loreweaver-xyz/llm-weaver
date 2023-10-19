@@ -72,7 +72,9 @@ pub trait Config {
 	///
 	/// This is not a fixed amount of tokens since the maximum amount of context tokens can change
 	/// depending on the model or custom max tokens.
-	const SUMMARY_PERCENTAGE: f32 = 0.1;
+	///
+	/// Defaults to `0.15`
+	const SUMMARY_PERCENTAGE: f32 = 0.15;
 	/// The sampling temperature, between 0 and 1. Higher values like 0.8 will make the output more
 	/// random, while lower values like 0.2 will make it more focused and deterministic. If set to
 	/// 0, the model will use log probability to automatically increase the temperature until
