@@ -2,8 +2,20 @@
 name = "loreweaver"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Managing long conversations with ChatGPT"
+readme = "README.md"
+repository = "https://github.com/snowmead/loreweaver"
+license-file = "LICENSE"
+keywords = ["chatbot", "gpt", "openai", "chatgpt"]
+categories = ["api-bindings"]
+exclude = [
+    "compose.yaml",
+    ".idea",
+    ".github",
+    ".DS_Store",
+    ".gitignore",
+    ".rustfmt.toml",
+]
 
 [dependencies]
 async-openai = "0.14.3"
