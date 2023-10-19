@@ -44,34 +44,34 @@
 //! // Implementation of a getter to specify which GPT model to use.
 //! pub struct GPTModel;
 //! impl Get<Models> for GPTModel {
-//! 	fn get() -> Models {
-//! 		Models::GPT4 // Specifies using GPT-4 model.
-//! 	}
+//!     fn get() -> Models {
+//!         Models::GPT4 // Specifies using GPT-4 model.
+//!     }
 //! }
 //!
 //! // Implementing the Config trait for the ChatBot with specific parameters.
 //! impl Config for ChatBot {
-//! 	// ChatGPT behaviours parameters.
-//! 	const TEMPERATURE: f32 = 0.7;
-//! 	const PRESENCE_PENALTY: f32 = 0.3;
-//! 	const FREQUENCY_PENALTY: f32 = 0.3;
+//!     // ChatGPT behaviours parameters.
+//!     const TEMPERATURE: f32 = 0.7;
+//!     const PRESENCE_PENALTY: f32 = 0.3;
+//!     const FREQUENCY_PENALTY: f32 = 0.3;
 //!
-//! 	// ChatGPT model to use.
-//! 	type Model = GPTModel;
+//!     // ChatGPT model to use.
+//!     type Model = GPTModel;
 //! }
 //!
 //! // Definition of a custom Thread structure to handle unique conversation threads.
 //! #[derive(Debug, Clone)]
 //! struct Thread {
-//! 	server_id: u64, // Identifier for the server.
-//! 	id: u64, // Unique identifier for the thread within the server.
+//!     server_id: u64, // Identifier for the server.
+//!     id: u64, // Unique identifier for the thread within the server.
 //! }
 //!
 //! // Implementation of the TapestryId trait for the Thread structure, enabling unique identification for storage.
 //! impl loreweaver::TapestryId for Thread {
-//! 	fn base_key(&self) -> String {
-//! 		format!("{}:{}", self.server_id, self.id) // Represents the unique key for the thread in storage.
-//! 	}
+//!     fn base_key(&self) -> String {
+//!         format!("{}:{}", self.server_id, self.id) // Represents the unique key for the thread in storage.
+//!     }
 //! }
 //!
 //! // The main async function where the ChatBot is used.
@@ -79,7 +79,7 @@
 //! async fn main() {
 //!   // Unique conversation thread.
 //!   let tapestry_id = Thread {
-//!    	server_id: 1,
+//!     server_id: 1,
 //!     id: 1,
 //!   };
 //!   // Initial system message.
@@ -91,11 +91,11 @@
 //!
 //!   // Weave a response!
 //!   let res = Loreweaver::<ChatBot>::weave(
-//!  	tapestry_id,
-//! 	system,
-//! 	override_max_context_tokens,
-//! 	"My name is Alice, what is yours?".to_string();,
-//! 	account_id,
+//!     tapestry_id,
+//!     system,
+//!     override_max_context_tokens,
+//!     "What was the last question I asked you?".to_string(),
+//!     account_id,
 //!   )
 //!   .await
 //!   .unwrap();
@@ -103,11 +103,11 @@
 //!   println!("Response: {}", res);
 //!
 //!   let res = Loreweaver::<ChatBot>::weave(
-//! 	tapestry_id,
-//! 	system,
-//! 	override_max_context_tokens,
-//! 	"What was the last question I asked you?".to_string(),
-//! 	account_id,
+//!     tapestry_id,
+//!     system,
+//!     override_max_context_tokens,
+//!     "What was the last question I asked you?".to_string(),
+//!     account_id,
 //!   )
 //!   .await
 //!   .unwrap();

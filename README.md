@@ -1,6 +1,8 @@
-# Loreweaver Library
+# Loreweaver
 
-Loreweaver is a robust library designed to interact with models like ChatGPT, with an emphasis on managing, saving, and tracking message histories over the course of multiple interactions, ensuring a continuous and coherent user experience in long conversations.
+![status](https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen)
+
+Loreweaver is a flexible out-of-the-box library designed to interact with ChatGPT, with an emphasis on managing long conversations exceeding the maximum token limit of a model, ensuring a continuous and coherent user experience.
 
 > Check out the official [Loreweaver Discord Bot](https://github.com/snowmead/loreweaver-discord-bot) purpously built based on this library!
 
