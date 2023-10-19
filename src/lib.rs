@@ -17,6 +17,7 @@
 //! For immediate use of this crate, a functioning Redis instance is necessary, with the following
 //! environment variables set:
 //!
+//! - `OPENAI_API_KEY`
 //! - `REDIS_PROTOCOL`
 //! - `REDIS_HOST`
 //! - `REDIS_PORT`
