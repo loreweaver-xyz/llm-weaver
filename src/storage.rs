@@ -70,6 +70,7 @@ pub trait TapestryChestHandler {
 		tapestry_id: TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment>>;
+	/// Retrieves the last tapestry metadata, or a metadata at a specified instance.
 	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
 		tapestry_id: TID,
 		instance: Option<u64>,

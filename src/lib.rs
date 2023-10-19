@@ -1,3 +1,120 @@
+//! Flexible out-of-the-box library developed for creating and managing coherent narratives,
+//! leveraging OpenAI's ChatGPT as the underlying LLM (Language Model Model).
+//!
+//! Built based on [OpenAI's recommended tactics](https://platform.openai.com/docs/guides/gpt-best-practices/tactic-for-dialogue-applications-that-require-very-long-conversations-summarize-or-filter-previous-dialogue),
+//! Loreweaver facilitates extended interactions with ChatGPT, seamlessly handling conversations
+//! that exceed the model's maximum context token limitation.
+//!
+//! Central to Loreweaver is the [`TapestryFragment`] struct, which archives dialogue history.
+//! The [`TapestryChestHandler`] defines the interface for storing and retrieving
+//! [`TapestryFragment`]s from a storage backend. By default, Loreweaver implements the
+//! [`TapestryChestHandler`] trait, employing Redis for backend storage in its default
+//! configuration.
+//!
+//! Effective utilization of Loreweaver necessitates the implementation of the [`Config`] trait,
+//! ensuring the provision of mandatory types not preset by default.
+//!
+//! For immediate use of this crate, a functioning Redis instance is necessary, with the following
+//! environment variables set:
+//!
+//! - `REDIS_HOSTNAME`
+//! - `REDIS_PORT`
+//! - `REDIS_PASSWORD`
+//!
+//! Should there be a need to integrate a distinct storage backend, you have the flexibility to
+//! create a custom handler by implementing the [`TapestryChestHandler`] trait and injecting it
+//! into the [`Config::TapestryChest`] associated type.
+//!
+//! This example demonstrates how to integrate Loreweaver into a chatbot service, showcasing the
+//! generation of dynamic responses and maintenance of conversation history. The `Thread` struct,
+//! uniquely identifying different user conversation threads, must implement the [`TapestryId`]
+//! trait to enable storage and retrieval of [`TapestryFragment`]s.
+//!
+//! # Example
+//!
+//! ```ignore
+//! // Importing necessary modules and traits from the loreweaver library and other dependencies.
+//! use loreweaver::{Loreweaver, Config, TapestryId};
+//! use std::fmt::Debug;
+//!
+//! // Core struct for the ChatBot which will be used to implement the Config trait.
+//! #[derive(Default, Debug)]
+//! pub struct ChatBot;
+//!
+//! // Implementation of a getter to specify which GPT model to use.
+//! pub struct GPTModel;
+//! impl Get<Models> for GPTModel {
+//! 	fn get() -> Models {
+//! 		Models::GPT4 // Specifies using GPT-4 model.
+//! 	}
+//! }
+//!
+//! // Implementing the Config trait for the ChatBot with specific parameters.
+//! impl Config for ChatBot {
+//! 	// ChatGPT behaviours parameters.
+//! 	const TEMPERATURE: f32 = 0.7;
+//! 	const PRESENCE_PENALTY: f32 = 0.3;
+//! 	const FREQUENCY_PENALTY: f32 = 0.3;
+//!
+//! 	// ChatGPT model to use.
+//! 	type Model = GPTModel;
+//! }
+//!
+//! // Definition of a custom Thread structure to handle unique conversation threads.
+//! #[derive(Debug, Clone)]
+//! struct Thread {
+//! 	server_id: u64, // Identifier for the server.
+//! 	id: u64, // Unique identifier for the thread within the server.
+//! }
+//!
+//! // Implementation of the TapestryId trait for the Thread structure, enabling unique identification for storage.
+//! impl loreweaver::TapestryId for Thread {
+//! 	fn base_key(&self) -> String {
+//! 		format!("{}:{}", self.server_id, self.id) // Represents the unique key for the thread in storage.
+//! 	}
+//! }
+//!
+//! // The main async function where the ChatBot is used.
+//! #[tokio::main]
+//! async fn main() {
+//!   // Unique conversation thread.
+//!   let tapestry_id = Thread {
+//!    	server_id: 1,
+//!     id: 1,
+//!   };
+//!   // Initial system message.
+//!   let system = "You are a Chat bot called Bob that always responds cleverly but is also random at times.".to_string();
+//!   // No override for maximum context tokens.
+//!   let override_max_context_tokens = None;
+//!   // Account id of the user
+//!   let account_id = Some("user1".to_string());
+//!
+//!   // Weave a response!
+//!   let res = Loreweaver::<ChatBot>::weave(
+//!  	tapestry_id,
+//! 	system,
+//! 	override_max_context_tokens,
+//! 	"My name is Alice, what is yours?".to_string();,
+//! 	account_id,
+//!   )
+//!   .await
+//!   .unwrap();
+//!
+//!   println!("Response: {}", res);
+//!
+//!   let res = Loreweaver::<ChatBot>::weave(
+//! 	tapestry_id,
+//! 	system,
+//! 	override_max_context_tokens,
+//! 	"What was the last question I asked you?".to_string(),
+//! 	account_id,
+//!   )
+//!   .await
+//!   .unwrap();
+//!
+//!   println!("Response: {}", res);
+//! }
+//! ```
 #![feature(async_closure)]
 #![feature(associated_type_defaults)]
 #![feature(more_qualified_paths)]
@@ -23,11 +140,9 @@ use storage::{StorageError, TapestryChest};
 use tokio::sync::RwLock;
 use tracing::{debug, error, instrument};
 
-use crate::models::Token;
+use models::{Models, Token};
 
-use self::models::Models;
-
-mod storage;
+pub mod storage;
 
 pub use storage::TapestryChestHandler;
 
@@ -58,7 +173,7 @@ pub trait Get<T> {
 ///         format!("{}:{}", self.id, self.sub_id)
 ///     }
 /// }
-pub trait TapestryId: Debug + Display + Clone + Send + Sync + 'static {
+pub trait TapestryId: Debug + Clone + Send + Sync + 'static {
 	/// Returns the base key.
 	///
 	/// This method should produce a unique string identifier, that will serve as a key for
@@ -111,7 +226,7 @@ pub trait Config {
 	type TapestryChest: TapestryChestHandler = TapestryChest;
 }
 
-/// Context message that represent a single message in a [`StoryPart`].
+/// Context message that represent a single message in a [`TapestryFragment`] instance.
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct ContextMessage {
 	pub role: String,
@@ -166,9 +281,9 @@ pub trait Loom<T: Config> {
 	/// Represents the response type returned by the LLM library.
 	type Response;
 
-	/// Prompt Loreweaver for a response for [`WeavingID`].
+	/// Prompt Loreweaver for a response for [`TapestryId`].
 	///
-	/// Prompts ChatGPT with the current [`StoryPart`] and the `msg`.
+	/// Prompts ChatGPT with the current [`TapestryFragment`] instance and the new `msg`.
 	///
 	/// If 80% of the maximum number of tokens allowed in a message history for the configured
 	/// ChatGPT [`Models`] has been reached, a summary will be generated instead of the current
@@ -210,7 +325,7 @@ pub trait Loom<T: Config> {
 	/// Returns a tuple of:
 	/// 		- The new story part to persist.
 	/// 		- The new request messages to prompt ChatGPT with.
-	async fn gen_summary(
+	async fn generate_summary(
 		max_tokens_with_summary: Tokens,
 		story_part: TapestryFragment,
 		system_req_msg: Self::RequestMessages,
@@ -379,7 +494,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			max_tokens_with_summary <= story_part.context_tokens + msg.count_tokens();
 		let (mut story_part_to_persist, mut request_messages) = match generate_summary {
 			true =>
-				<Loreweaver<T> as Loom<T>>::gen_summary(
+				<Loreweaver<T> as Loom<T>>::generate_summary(
 					max_tokens_with_summary,
 					story_part,
 					system_req_msg,
@@ -498,7 +613,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			(1.0 - T::SUMMARY_PERCENTAGE)) as Tokens
 	}
 
-	async fn gen_summary(
+	async fn generate_summary(
 		max_tokens_with_summary: Tokens,
 		story_part: TapestryFragment,
 		system_req_msg: LoomRequestMessages<T>,
