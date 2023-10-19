@@ -1,12 +1,12 @@
 [package]
 publish = true
 name = "loreweaver"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Managing long conversations with ChatGPT"
 readme = "README.md"
 repository = "https://github.com/snowmead/loreweaver"
-license-file = "LICENSE"
+license = "MIT"
 keywords = ["chatbot", "gpt", "openai", "chatgpt"]
 categories = ["api-bindings"]
 exclude = [

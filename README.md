@@ -26,6 +26,10 @@ The library is designed to be as flexible as possible, allowing you to easily in
 
 - **AI-Driven MMO NPC Interactions:** Enhancing MMO experiences by enabling NPCs to have contextually relevant interactions with players based on past encounters.
 
+## How to Use
+
+Follow the crate level documentation in [lib.rs](https://docs.rs/loreweaver/latest/loreweaver/) for a detailed explanation of how to use the library.
+
 ## Contribution
 
 If you are passioniate about this project, please feel free to fork the repository and submit pull requests for enhancements, bug fixes, or additional features.
