@@ -17,7 +17,8 @@
 //! For immediate use of this crate, a functioning Redis instance is necessary, with the following
 //! environment variables set:
 //!
-//! - `REDIS_HOSTNAME`
+//! - `REDIS_PROTOCOL`
+//! - `REDIS_HOST`
 //! - `REDIS_PORT`
 //! - `REDIS_PASSWORD`
 //!
