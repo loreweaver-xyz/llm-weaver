@@ -278,12 +278,19 @@ async fn get_client() -> Result<Client, redis::RedisError> {
 	Ok(REDIS_CLIENT
 		.get_or_init(async || {
 			debug!("Initializing Redis client");
+
+			let protocol = std::env::var("REDIS_PROTOCOL").unwrap_or_else(|_| "redis".to_string());
+			let host = std::env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
+			let port = std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
+			let password = std::env::var("REDIS_PASSWORD").unwrap_or_default();
+
 			// TODO: Secured uri scheme for Redis
-			match redis::Client::open("redis://:eYVX7EwVmmxKPCDmwMtyKVge8oLd2t81@127.0.0.1/") {
+			match redis::Client::open(format!("{}://:{}@{}:{}", protocol, password, host, port)) {
 				Ok(client) => client,
 				Err(e) => {
-					error!("Failed to initialize Redis client: {}", e);
-					panic!("Failed to initialize Redis client: {}", e)
+					let m = format!("Failed to initialize Redis client: {}", e);
+					error!(m);
+					panic!("{}", m)
 				},
 			}
 		})
