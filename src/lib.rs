@@ -100,11 +100,11 @@
 //!     system,
 //!     override_max_context_tokens,
 //!     vec![ContextMessage {
-//! 		role: WrapperRole::from("user".to_string()),
-//! 		msg: "Alice: What is your name?",
-//! 		account_id: 1,
-//! 		timestamp: chrono::Utc::now().to_rfc3339(),
-//! 	}],
+//!         role: WrapperRole::from("user".to_string()),
+//!         msg: "Alice: What is your name?",
+//!         account_id: 1,
+//!         timestamp: chrono::Utc::now().to_rfc3339(),
+//!     }],
 //!   )
 //!   .await
 //!   .unwrap();
@@ -116,11 +116,11 @@
 //!     system,
 //!     override_max_context_tokens,
 //!    vec![ContextMessage {
-//! 		role: WrapperRole::from("user".to_string()),
-//! 		msg: "Alice: What was the last question I asked you?",
-//! 		account_id: 1,
-//! 		timestamp: chrono::Utc::now().to_rfc3339(),
-//! 	}],
+//!         role: WrapperRole::from("user".to_string()),
+//!         msg: "Alice: What was the last question I asked you?",
+//!         account_id: 1,
+//!         timestamp: chrono::Utc::now().to_rfc3339(),
+//!    }],
 //!   )
 //!   .await
 //!   .unwrap();
@@ -312,7 +312,7 @@ pub trait Loom<T: Config> {
 	) -> Result<Self::Response>;
 
 	/// Build the message/messages to prompt ChatGPT with.
-	fn build_req_msgs(msgs: &Vec<ContextMessage>) -> Result<Self::RequestMessages>;
+	fn build_req_msgs(msgs: &[ContextMessage]) -> Result<Self::RequestMessages>;
 
 	/// The action to query ChatGPT with the supplied configurations and messages.
 	async fn prompt(
@@ -419,13 +419,9 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 	) -> Result<LoomResponse<T>> {
 		let build_req_msgs = <Loreweaver<T> as Loom<T>>::build_req_msgs;
 
-		let system_ctx_msg = Self::build_context_message(
-			WrapperRole::from(SYSTEM_ROLE.to_string()).into(),
-			system,
-			None,
-		);
-		let sys_req_msg =
-			build_req_msgs(&vec![system_ctx_msg.clone()])?.first().unwrap().to_owned();
+		let system_ctx_msg =
+			Self::build_context_message(WrapperRole::from(SYSTEM_ROLE.to_string()), system, None);
+		let sys_req_msg = build_req_msgs(&[system_ctx_msg.clone()])?.first().unwrap().to_owned();
 
 		// get latest tapestry fragment instance from storage
 		let tapestry_fragment = T::TapestryChest::get_tapestry_fragment(tapestry_id.clone(), None)
@@ -455,13 +451,12 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 
 		let mut tapestry_fragment_to_persist = if let Some(s) = maybe_summary_text {
 			let summary = Self::build_context_message(
-				WrapperRole::from(SYSTEM_ROLE.to_string()).into(),
+				WrapperRole::from(SYSTEM_ROLE.to_string()),
 				s.clone(),
 				None,
 			);
 
-			req_msgs
-				.push_front(build_req_msgs(&vec![summary.clone()])?.first().unwrap().to_owned());
+			req_msgs.push_front(build_req_msgs(&[summary.clone()])?.first().unwrap().to_owned());
 
 			// keep system and summary messages
 			req_msgs.truncate(2);
@@ -479,13 +474,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 
 		let ctx_msgs = msgs
 			.into_iter()
-			.map(|m| {
-				Self::build_context_message(
-					WrapperRole::from(m.role).into(),
-					m.content.clone(),
-					m.account_id.clone(),
-				)
-			})
+			.map(|m| Self::build_context_message(m.role, m.content.clone(), m.account_id.clone()))
 			.collect::<Vec<ContextMessage>>();
 
 		// add new user message to request_messages which will be used to prompt with
@@ -494,7 +483,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			&[
 				ctx_msgs.as_slice(),
 				&[Self::build_context_message(
-					WrapperRole::from(SYSTEM_ROLE.to_string()).into(),
+					WrapperRole::from(SYSTEM_ROLE.to_string()),
 					format!("Respond with {} words or less", max_tokens as f32 * TOKEN_WORD_RATIO),
 					None,
 				)],
@@ -524,7 +513,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 			ctx_msgs
 				.into_iter()
 				.chain(vec![Self::build_context_message(
-					WrapperRole::from(ASSISTANT_ROLE.to_string()).into(),
+					WrapperRole::from(ASSISTANT_ROLE.to_string()),
 					response_content.clone(),
 					None,
 				)])
@@ -565,7 +554,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		let build_ctx_msg = <Loreweaver<T> as Loom<T>>::build_context_message;
 		let build_messages = <Loreweaver<T> as Loom<T>>::build_req_msgs;
 
-		let gen_summary_prompt = build_messages(&vec![build_ctx_msg(
+		let gen_summary_prompt = build_messages(&[build_ctx_msg(
 			WrapperRole::from(SYSTEM_ROLE.to_string()),
 			format!(
 				"Generate a summary of the entire adventure so far. Respond with {} words or less",
@@ -587,7 +576,7 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		let summary_response_content =
 			<Loreweaver<T> as Loom<T>>::extract_response_content(&res).await?;
 
-		let summary_req_msg = build_messages(&vec![build_ctx_msg(
+		let summary_req_msg = build_messages(&[build_ctx_msg(
 			WrapperRole::from(SYSTEM_ROLE.to_string()),
 			format!("\n\"\"\"\n {}", summary_response_content),
 			None,
@@ -623,12 +612,12 @@ impl<T: Config> Loom<T> for Loreweaver<T> {
 		})
 	}
 
-	fn build_req_msgs(msgs: &Vec<ContextMessage>) -> Result<LoomRequestMessages<T>> {
-		msgs.into_iter()
+	fn build_req_msgs(msgs: &[ContextMessage]) -> Result<LoomRequestMessages<T>> {
+		msgs.iter()
 			.map(|msg: &ContextMessage| {
 				let mut builder = ChatCompletionRequestMessageArgs::default();
 
-				let role: Role = WrapperRole::from(msg.role.clone()).into();
+				let role: Role = msg.role.clone().into();
 				builder.role(role).content(msg.content.clone());
 
 				if let Some(ref account_id) = msg.account_id {
