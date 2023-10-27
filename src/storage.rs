@@ -109,8 +109,6 @@ impl TapestryChestHandler for TapestryChest {
 			},
 		};
 
-		// increment score by 1
-		// this is to ensure that a we save and access new "instances" of TapestryFragments
 		if increment {
 			con.zincr(base_key, 0, 1).await.map_err(|e| {
 				error!("Failed to save tapestry fragment to Redis: {}", e);
@@ -118,6 +116,8 @@ impl TapestryChestHandler for TapestryChest {
 			})?;
 
 			instance += 1;
+
+			debug!("Incremented instance to {} for {}", instance, base_key);
 		}
 
 		let key = format!("{base_key}:{instance}");
@@ -255,13 +255,13 @@ impl TapestryChestHandler for TapestryChest {
 
 		let key = format!("{base_key}:{instance}");
 
-		let metadata_raw: Vec<u8> = con.hget(&key, "context_messages").await.map_err(|e| {
-			error!("Failed to get \"context_messages\" member from {} key: {}", key, e);
+		let metadata_raw: Vec<u8> = con.hget(&key, "metadata").await.map_err(|e| {
+			error!("Failed to get \"metadata\" member from {} key: {}", key, e);
 			StorageError::Redis(e)
 		})?;
 
 		let tapestry_metadata = serde_json::from_slice::<M>(&metadata_raw).map_err(|e| {
-			error!("Failed to parse tapestry fragment context_messages: {}", e);
+			error!("Failed to parse tapestry fragment metadata: {}", e);
 			StorageError::Parsing
 		})?;
 
@@ -284,7 +284,6 @@ async fn get_client() -> Result<Client, redis::RedisError> {
 			let port = std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
 			let password = std::env::var("REDIS_PASSWORD").unwrap_or_default();
 
-			// TODO: Secured uri scheme for Redis
 			match redis::Client::open(format!("{}://:{}@{}:{}", protocol, password, host, port)) {
 				Ok(client) => client,
 				Err(e) => {
