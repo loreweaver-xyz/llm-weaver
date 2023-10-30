@@ -6,13 +6,11 @@
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-loreweaver-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/loreweaver)
 [<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/snowmead/loreweaver/rust.yml?branch=main&style=for-the-badge" height="20">](https://github.com/snowmead/loreweaver/actions?query=branch%3Amain)
 
-Loreweaver is a flexible out-of-the-box library designed to interact with ChatGPT, with an emphasis on managing long conversations exceeding the maximum token limit of a model, ensuring a continuous and coherent user experience.
-
-> Check out the official [Loreweaver Discord Bot](https://github.com/snowmead/loreweaver-discord-bot) purpously built based on this library!
+Loreweaver is a flexible library designed to interact with any LLM, with an emphasis on managing long conversations exceeding the maximum token limit of a model, ensuring a continuous and coherent user experience.
 
 ## Implementation
 
-This library is a rust implementation of [OpenAI's Tactic](https://platform.openai.com/docs/guides/gpt-best-practices/tactic-for-dialogue-applications-that-require-very-long-conversations-summarize-or-filter-previous-dialogue) for handling long conversations with ChatGPT that span beyond a GPT model's maximum context token limit.
+This library is a rust implementation of [OpenAI's Tactic](https://platform.openai.com/docs/guides/gpt-best-practices/tactic-for-dialogue-applications-that-require-very-long-conversations-summarize-or-filter-previous-dialogue) for handling long conversations with a token context bound LLM.
 
 Once a certain threshold of context tokens is reached, the library will summarize the entire conversation and begin a new conversation with the summarized context appended to the system instructions.
 
