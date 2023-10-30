@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use async_openai::types::Role;
 use serde::{Deserialize, Serialize};
 
@@ -18,12 +20,6 @@ pub enum WrapperRole {
 impl Default for WrapperRole {
 	fn default() -> Self {
 		Self::Role(Role::User)
-	}
-}
-
-impl From<Role> for WrapperRole {
-	fn from(role: Role) -> Self {
-		WrapperRole::Role(role)
 	}
 }
 
@@ -57,6 +53,50 @@ impl From<WrapperRole> for String {
 			WrapperRole::Role(Role::Assistant) => ASSISTANT_ROLE.to_string(),
 			WrapperRole::Role(Role::User) => USER_ROLE.to_string(),
 			WrapperRole::Role(Role::Function) => FUNCTION_ROLE.to_string(),
+		}
+	}
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LoomError {
+	Weave(#[from] WeaveError),
+	Storage(#[from] StorageError),
+}
+
+impl Display for LoomError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Weave(e) => write!(f, "{}", e),
+			Self::Storage(e) => write!(f, "{}", e),
+		}
+	}
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WeaveError {
+	/// Bad configuration
+	BadConfig(String),
+}
+
+impl Display for WeaveError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::BadConfig(msg) => write!(f, "Bad configuration: {}", msg),
+		}
+	}
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StorageError {
+	Redis(redis::RedisError),
+	Parsing,
+}
+
+impl Display for StorageError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			StorageError::Redis(e) => write!(f, "Redis error: {}", e),
+			StorageError::Parsing => write!(f, "Parsing error"),
 		}
 	}
 }

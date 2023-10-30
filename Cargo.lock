@@ -250,6 +250,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bounded-integer"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78a6932c88f1d2c29533a3b8a5f5a2f84cc19c3339b431677c3160c5c2e6ca85"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "bstr"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1060,14 +1069,16 @@ checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
 name = "loreweaver"
-version = "0.2.1"
+version = "1.0.0"
 dependencies = [
  "async-openai",
  "async-trait",
+ "bounded-integer",
  "chrono",
  "clap",
  "google-cloud-storage",
  "lazy_static",
+ "num-traits",
  "redis",
  "serde",
  "serde_json",

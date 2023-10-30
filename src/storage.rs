@@ -5,7 +5,10 @@ use std::fmt::{Debug, Display};
 use tokio::sync::OnceCell;
 use tracing::{debug, error, instrument};
 
-use crate::{models::Tokens, ContextMessage, TapestryFragment, TapestryId};
+use crate::{
+	types::{LoomError, StorageError},
+	Config, ContextMessage, TapestryFragment, TapestryId,
+};
 
 /// A storage handler trait designed for saving and retrieving fragments of a tapestry.
 ///
@@ -21,7 +24,7 @@ use crate::{models::Tokens, ContextMessage, TapestryFragment, TapestryId};
 /// Checkout the out of the box implementation [`TapestryChest`] whichs uses Redis as the storage
 /// backend.
 #[async_trait]
-pub trait TapestryChestHandler {
+pub trait TapestryChestHandler<T: Config> {
 	/// Defines the error type returned by the handler methods.
 	type Error: Display + Debug;
 
@@ -43,7 +46,7 @@ pub trait TapestryChestHandler {
 	/// `Self::Error`.
 	async fn save_tapestry_fragment<TID: TapestryId>(
 		tapestry_id: TID,
-		tapestry_fragment: TapestryFragment,
+		tapestry_fragment: TapestryFragment<T>,
 		increment: bool,
 	) -> crate::Result<()>;
 	/// Save tapestry metadata.
@@ -69,7 +72,7 @@ pub trait TapestryChestHandler {
 	async fn get_tapestry_fragment<TID: TapestryId>(
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> crate::Result<Option<TapestryFragment>>;
+	) -> crate::Result<Option<TapestryFragment<T>>>;
 	/// Retrieves the last tapestry metadata, or a metadata at a specified instance.
 	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
 		tapestry_id: TID,
@@ -77,18 +80,18 @@ pub trait TapestryChestHandler {
 	) -> crate::Result<Option<M>>;
 }
 
-/// Default implementation of Loreweaver
+/// Default implementation of [`Config::TapestryChest`]
 ///
 /// Storing and retrieving data using a Redis instance.
 pub struct TapestryChest;
 
 #[async_trait]
-impl TapestryChestHandler for TapestryChest {
+impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 	type Error = StorageError;
 
 	async fn save_tapestry_fragment<TID: TapestryId>(
 		tapestry_id: TID,
-		tapestry_fragment: TapestryFragment,
+		tapestry_fragment: TapestryFragment<T>,
 		increment: bool,
 	) -> crate::Result<()> {
 		let client = get_client().await.expect("Failed to get redis client");
@@ -102,7 +105,7 @@ impl TapestryChestHandler for TapestryChest {
 			None => {
 				con.zadd(base_key, 0, 0).await.map_err(|e| {
 					error!("Failed to save tapestry fragment to Redis: {}", e);
-					StorageError::Redis(e)
+					LoomError::from(StorageError::Redis(e))
 				})?;
 
 				0
@@ -112,7 +115,7 @@ impl TapestryChestHandler for TapestryChest {
 		if increment {
 			con.zincr(base_key, 0, 1).await.map_err(|e| {
 				error!("Failed to save tapestry fragment to Redis: {}", e);
-				StorageError::Redis(e)
+				LoomError::from(StorageError::Redis(e))
 			})?;
 
 			instance += 1;
@@ -126,7 +129,7 @@ impl TapestryChestHandler for TapestryChest {
 			.await
 			.map_err(|e| {
 				error!("Failed to save \"context_tokens\" member to {} key: {}", key, e);
-				StorageError::Redis(e)
+				LoomError::from(StorageError::Redis(e))
 			})?;
 
 		debug!("Saved \"context_tokens\" member to {} key", key);
@@ -142,7 +145,7 @@ impl TapestryChestHandler for TapestryChest {
 		.await
 		.map_err(|e| {
 			error!("Failed to save \"context_messages\" member to {} key: {}", key, e);
-			StorageError::Redis(e)
+			LoomError::from(StorageError::Redis(e))
 		})?;
 
 		debug!("Saved \"context_messages\" member to {} key", key);
@@ -165,7 +168,7 @@ impl TapestryChestHandler for TapestryChest {
 			None => {
 				con.zadd(base_key, 0, 0).await.map_err(|e| {
 					error!("Failed to save tapestry fragment to Redis: {}", e);
-					StorageError::Redis(e)
+					LoomError::from(StorageError::Redis(e))
 				})?;
 
 				0
@@ -176,7 +179,7 @@ impl TapestryChestHandler for TapestryChest {
 
 		con.hset(&key, "metadata", metadata).await.map_err(|e| {
 			error!("Failed to save \"metadata\" member to {} key: {}", key, e);
-			StorageError::Redis(e)
+			LoomError::from(StorageError::Redis(e))
 		})?;
 
 		debug!("Saved \"metadata\" member to {} key", key);
@@ -187,7 +190,7 @@ impl TapestryChestHandler for TapestryChest {
 	async fn get_tapestry_fragment<TID: TapestryId>(
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> crate::Result<Option<TapestryFragment>> {
+	) -> crate::Result<Option<TapestryFragment<T>>> {
 		let client = get_client().await.expect("Failed to get redis client");
 		let mut con = client.get_async_connection().await.expect("Failed to get redis connection");
 		debug!("Connected to Redis");
@@ -209,10 +212,10 @@ impl TapestryChestHandler for TapestryChest {
 				let context_tokens_str: String =
 					con.hget(&key, "context_tokens").await.map_err(|e| {
 						error!("Failed to get \"context_tokens\" member from {} key: {}", key, e);
-						StorageError::Redis(e)
+						LoomError::from(StorageError::Redis(e))
 					})?;
-				context_tokens_str.parse::<Tokens>().map_err(|e| {
-					error!("Failed to parse \"context_tokens\" member from {} key: {}", key, e);
+				context_tokens_str.parse::<T::Tokens>().map_err(|_| {
+					error!("Failed to parse \"context_tokens\" member from key: {}", key);
 					StorageError::Parsing
 				})?
 			},
@@ -220,10 +223,10 @@ impl TapestryChestHandler for TapestryChest {
 				let context_messages_raw: Vec<u8> =
 					con.hget(&key, "context_messages").await.map_err(|e| {
 						error!("Failed to get \"context_messages\" member from {} key: {}", key, e);
-						StorageError::Redis(e)
+						LoomError::from(StorageError::Redis(e))
 					})?;
 
-				serde_json::from_slice::<Vec<ContextMessage>>(&context_messages_raw).map_err(
+				serde_json::from_slice::<Vec<ContextMessage<T>>>(&context_messages_raw).map_err(
 					|e| {
 						error!("Failed to parse tapestry fragment context_messages: {}", e);
 						StorageError::Parsing
@@ -257,7 +260,7 @@ impl TapestryChestHandler for TapestryChest {
 
 		let metadata_raw: Vec<u8> = con.hget(&key, "metadata").await.map_err(|e| {
 			error!("Failed to get \"metadata\" member from {} key: {}", key, e);
-			StorageError::Redis(e)
+			LoomError::from(StorageError::Redis(e))
 		})?;
 
 		let tapestry_metadata = serde_json::from_slice::<M>(&metadata_raw).map_err(|e| {
@@ -300,11 +303,11 @@ async fn get_client() -> Result<Client, redis::RedisError> {
 async fn get_score_from_last_zset_member(
 	con: &mut Connection,
 	base_key: &String,
-) -> Result<Option<u64>, StorageError> {
+) -> super::Result<Option<u64>> {
 	debug!("Executing ZRANGE_WITHSCORES {}...", base_key);
 	let member_score: Vec<String> = con.zrange_withscores(base_key, -1, -1).await.map_err(|e| {
 		error!("Failed to save tapestry fragment to Redis: {}", e);
-		StorageError::Redis(e)
+		LoomError::from(StorageError::Redis(e))
 	})?;
 	debug!("Result ZRANGE_WITHSCORES: {:?}", member_score);
 
@@ -313,24 +316,9 @@ async fn get_score_from_last_zset_member(
 		false if member_score.len() == 2 => member_score[1].parse::<u64>().unwrap_or(0),
 		false => {
 			error!("Unexpected member score length: {}", member_score.len());
-			return Err(StorageError::Parsing)
+			return Err(LoomError::from(StorageError::Parsing).into());
 		},
 	};
 
 	Ok(Some(instance))
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum StorageError {
-	Redis(redis::RedisError),
-	Parsing,
-}
-
-impl Display for StorageError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			StorageError::Redis(e) => write!(f, "Redis error: {}", e),
-			StorageError::Parsing => write!(f, "Parsing error"),
-		}
-	}
 }
