@@ -1,5 +1,5 @@
 <div align="center">
-    <img src="./assets/loom-logo-1024x1024.png" width="60%" style="border-radius: 10px;">
+    <img src="./assets/loom-logo-1024x1024.png" width="50%"">
  
 [<img alt="github" src="https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loom)
 [<img alt="github" src="https://img.shields.io/badge/github-snowmead/loom-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loom)
@@ -18,7 +18,9 @@ This library is a rust implementation of [OpenAI's Tactic](https://platform.open
 
 Once a certain threshold of context tokens is reached, the library will summarize the entire conversation and begin a new conversation with the summarized context appended to the system instructions.
 
-The library is designed to be as flexible as possible, allowing you to easily integrate it into your own projects.
+## Usage
+
+Follow the [crate level documentation](https://docs.rs/loom/latest/loom/) for a detailed explanation of how to use the library.
 
 ## Use Cases
 
@@ -31,10 +33,6 @@ The library is designed to be as flexible as possible, allowing you to easily in
 - **Healthcare Virtual Assistants:** Creating healthcare assistants that provide follow-up advice and reminders based on past user health queries.
 
 - **AI-Driven MMO NPC Interactions:** Enhancing MMO experiences by enabling NPCs to have contextually relevant interactions with players based on past encounters.
-
-## How to Use
-
-Follow the [crate level documentation](https://docs.rs/loom/latest/loom/) for a detailed explanation of how to use the library.
 
 ## Contribution
 
