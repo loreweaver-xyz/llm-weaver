@@ -2,10 +2,10 @@
 //! (Large Language Models) to generate dynamic responses.
 //!
 //! Built based on [OpenAI's recommended tactics](https://platform.openai.com/docs/guides/gpt-best-practices/tactic-for-dialogue-applications-that-require-very-long-conversations-summarize-or-filter-previous-dialogue),
-//! Loreweaver facilitates extended interactions with any LLM, seamlessly handling conversations
+//! Loom facilitates extended interactions with any LLM, seamlessly handling conversations
 //! that exceed a model's maximum context token limitation.
 //!
-//! Central to Loreweaver is the [`Loom`] trait, which prompts the configured LLM and
+//! Central to Loom is the [`Loom`] trait, which prompts the configured LLM and
 //! stores the message history as [`TapestryFragment`] instances. This trait is highly configurable
 //! through the [`Config`] trait to support a wide range of use cases.
 //!
@@ -66,7 +66,7 @@ pub trait Get<T> {
 /// keys in redis using the `base_key` method.
 ///
 /// ```ignore
-/// use loreweaver::{TapestryId, Get};
+/// use loom::{TapestryId, Get};
 /// use std::fmt::{Debug, Display};
 ///
 /// struct MyTapestryId {
@@ -222,7 +222,7 @@ impl<T: Config> TapestryFragment<T> {
 /// This is implemented over the [`Config`] trait.
 #[async_trait]
 pub trait Loom<T: Config> {
-	/// Prompt Loreweaver for a response for [`TapestryId`].
+	/// Prompt Loom for a response for [`TapestryId`].
 	///
 	/// Prompts LLM with the current [`TapestryFragment`] instance and the new `msgs`.
 	///

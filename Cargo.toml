@@ -1,11 +1,11 @@
 [package]
 publish = true
-name = "loreweaver"
+name = "loom"
 version = "1.0.0"
 edition = "2021"
 description = "Managing long conversations with ChatGPT"
 readme = "README.md"
-repository = "https://github.com/snowmead/loreweaver"
+repository = "https://github.com/snowmead/loom"
 license = "MIT"
 keywords = ["chatbot", "gpt", "openai", "chatgpt"]
 categories = ["api-bindings"]

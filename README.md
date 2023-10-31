@@ -1,16 +1,16 @@
 <div align="center">
     <img src="./assets/loom-logo-1024x1024.png" width="60%" style="border-radius: 10px;">
  
-[<img alt="github" src="https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loreweaver)
-[<img alt="github" src="https://img.shields.io/badge/github-snowmead/loreweaver-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loreweaver)
-[<img alt="crates.io" src="https://img.shields.io/crates/v/loreweaver.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/loreweaver)
-[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-loreweaver-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/loreweaver)
-[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/snowmead/loreweaver/rust.yml?branch=main&style=for-the-badge" height="20">](https://github.com/snowmead/loreweaver/actions?query=branch%3Amain)
+[<img alt="github" src="https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loom)
+[<img alt="github" src="https://img.shields.io/badge/github-snowmead/loom-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loom)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/loom.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/loom)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-loom-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/loom)
+[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/snowmead/loom/rust.yml?branch=main&style=for-the-badge" height="20">](https://github.com/snowmead/loom/actions?query=branch%3Amain)
 </div>
 
-# Loreweaver
+# Loom
 
-Loreweaver is a flexible library designed to interact with any LLM, with an emphasis on managing long conversations exceeding the maximum token limit of a model, ensuring a continuous and coherent user experience.
+Loom is a flexible library designed to interact with any LLM, with an emphasis on managing long conversations exceeding the maximum token limit of a model, ensuring a continuous and coherent user experience.
 
 ## Implementation
 
@@ -34,7 +34,7 @@ The library is designed to be as flexible as possible, allowing you to easily in
 
 ## How to Use
 
-Follow the [crate level documentation](https://docs.rs/loreweaver/latest/loreweaver/) for a detailed explanation of how to use the library.
+Follow the [crate level documentation](https://docs.rs/loom/latest/loom/) for a detailed explanation of how to use the library.
 
 ## Contribution
 
@@ -42,4 +42,4 @@ If you are passioniate about this project, please feel free to fork the reposito
 
 ## License
 
-Loreweaver is distributed under the MIT License, ensuring maximum freedom for using and sharing it in your projects.
+Loom is distributed under the MIT License, ensuring maximum freedom for using and sharing it in your projects.

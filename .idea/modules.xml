@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/loreweaver-bot.iml" filepath="$PROJECT_DIR$/.idea/loreweaver-bot.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/loom-bot.iml" filepath="$PROJECT_DIR$/.idea/loom-bot.iml" />
     </modules>
   </component>
 </project>
