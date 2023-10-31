@@ -1,7 +1,7 @@
 [package]
 publish = true
 name = "llm-weaver"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "Manage long conversations with any LLM"
 readme = "README.md"
@@ -16,6 +16,7 @@ exclude = [
     ".DS_Store",
     ".gitignore",
     ".rustfmt.toml",
+    "assets/*",
 ]
 
 [dependencies]
