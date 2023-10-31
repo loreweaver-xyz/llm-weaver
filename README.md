@@ -8,9 +8,9 @@
 [<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/snowmead/loom/rust.yml?branch=main&style=for-the-badge" height="20">](https://github.com/snowmead/loom/actions?query=branch%3Amain)
 </div>
 
-# Loom
+# LLM Weaver
 
-Loom is a flexible library designed to interact with any LLM, with an emphasis on managing long conversations exceeding the maximum token limit of a model, ensuring a continuous and coherent user experience.
+LLM Weaver is a flexible library designed to interact with any LLM, with an emphasis on managing long conversations exceeding the maximum token limit of a model, ensuring a continuous and coherent user experience.
 
 ## Implementation
 
@@ -40,4 +40,4 @@ If you are passioniate about this project, please feel free to fork the reposito
 
 ## License
 
-Loom is distributed under the MIT License, ensuring maximum freedom for using and sharing it in your projects.
+LLM Weaver is distributed under the MIT License, ensuring maximum freedom for using and sharing it in your projects.

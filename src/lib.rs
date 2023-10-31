@@ -2,7 +2,7 @@
 //! (Large Language Models) to generate dynamic responses.
 //!
 //! Built based on [OpenAI's recommended tactics](https://platform.openai.com/docs/guides/gpt-best-practices/tactic-for-dialogue-applications-that-require-very-long-conversations-summarize-or-filter-previous-dialogue),
-//! Loom facilitates extended interactions with any LLM, seamlessly handling conversations
+//! LLM Weaver facilitates extended interactions with any LLM, seamlessly handling conversations
 //! that exceed a model's maximum context token limitation.
 //!
 //! [`Loom`] is the core of this library. It prompts the configured LLM and stores the message
@@ -259,7 +259,7 @@ impl<T: Config> TapestryFragment<T> {
 /// This is implemented over the [`Config`] trait.
 #[async_trait]
 pub trait Loom<T: Config> {
-	/// Prompt Loom for a response for [`TapestryId`].
+	/// Prompt LLM Weaver for a response for [`TapestryId`].
 	///
 	/// Prompts LLM with the current [`TapestryFragment`] instance and the new `msgs`.
 	///

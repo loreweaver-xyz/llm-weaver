@@ -1,9 +1,9 @@
 [package]
 publish = true
-name = "loom"
+name = "llm-weaver"
 version = "1.0.0"
 edition = "2021"
-description = "Managing long conversations with ChatGPT"
+description = "Manage long conversations with any LLM"
 readme = "README.md"
 repository = "https://github.com/snowmead/loom"
 license = "MIT"
