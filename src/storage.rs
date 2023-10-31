@@ -6,7 +6,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, error, instrument};
 
 use crate::{
-	types::{LoomError, StorageError},
+	types::{LoomError, PromptModelTokens, StorageError},
 	Config, ContextMessage, TapestryFragment, TapestryId,
 };
 
@@ -74,7 +74,7 @@ pub trait TapestryChestHandler<T: Config> {
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment<T>>>;
 	/// Retrieves the last tapestry metadata, or a metadata at a specified instance.
-	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
+	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Default>(
 		tapestry_id: TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<M>>;
@@ -214,7 +214,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 						error!("Failed to get \"context_tokens\" member from {} key: {}", key, e);
 						LoomError::from(StorageError::Redis(e))
 					})?;
-				context_tokens_str.parse::<T::Tokens>().map_err(|_| {
+				context_tokens_str.parse::<PromptModelTokens<T>>().map_err(|_| {
 					error!("Failed to parse \"context_tokens\" member from key: {}", key);
 					StorageError::Parsing
 				})?
@@ -238,7 +238,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		Ok(Some(tapestry_fragment))
 	}
 
-	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
+	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Default>(
 		tapestry_id: TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<M>> {

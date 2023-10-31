@@ -3,6 +3,11 @@ use std::fmt::Display;
 use async_openai::types::Role;
 use serde::{Deserialize, Serialize};
 
+use crate::{Config, Llm};
+
+pub type PromptModelTokens<T> = <<T as Config>::PromptModel as Llm<T>>::Tokens;
+pub type SummaryModelTokens<T> = <<T as Config>::SummaryModel as Llm<T>>::Tokens;
+
 /// Base type for all configuration parameters.
 pub type F32 = f32;
 
