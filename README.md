@@ -1,6 +1,5 @@
 <div align="center">
-    <img src="./assets/loreweaver-logo.png" width="40%" style="border-radius: 10px;">
-  <br></br>
+    <img src="./assets/loom-logo-1024x1024.png" width="60%" style="border-radius: 10px;">
  
 [<img alt="github" src="https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loreweaver)
 [<img alt="github" src="https://img.shields.io/badge/github-snowmead/loreweaver-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loreweaver)
