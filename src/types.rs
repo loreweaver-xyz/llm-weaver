@@ -23,14 +23,6 @@ impl Default for WrapperRole {
 	}
 }
 
-impl From<WrapperRole> for Role {
-	fn from(role: WrapperRole) -> Self {
-		match role {
-			WrapperRole::Role(role) => role,
-		}
-	}
-}
-
 impl From<String> for WrapperRole {
 	fn from(role: String) -> Self {
 		match role.as_str() {

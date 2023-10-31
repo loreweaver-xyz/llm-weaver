@@ -5,12 +5,12 @@
 //! Loom facilitates extended interactions with any LLM, seamlessly handling conversations
 //! that exceed a model's maximum context token limitation.
 //!
-//! Central to Loom is the [`Loom`] trait, which prompts the configured LLM and
-//! stores the message history as [`TapestryFragment`] instances. This trait is highly configurable
-//! through the [`Config`] trait to support a wide range of use cases.
+//! [`Loom`] is the core of this library. It prompts the configured LLM and stores the message
+//! history as [`TapestryFragment`] instances. This trait is highly configurable through the
+//! [`Config`] trait to support a wide range of use cases.
 //!
-//! You must implement the [`Config`] trait, which defines the necessary types
-//! and methods needed by [`Loom`].
+//! You must implement the [`Config`] trait, which defines the necessary types and methods needed by
+//! [`Loom`].
 //!
 //! If you are using the default implementation of [`Config::TapestryChest`], it is expected that a
 //! Redis instance is running and that the following environment variables are set:
@@ -55,10 +55,6 @@ use crate::types::WrapperRole;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-pub trait Get<T> {
-	fn get() -> T;
-}
-
 /// Represents a unique identifier for any arbitrary entity.
 ///
 /// This trait provides a method for generating a standardized key, which can be utilized across
@@ -90,12 +86,19 @@ pub trait TapestryId: Debug + Clone + Send + Sync + 'static {
 
 pub trait Llm<T: Config>: Sized + PartialEq + Eq + Clone + Debug + Copy + Send + Sync {
 	/// The maximum number of tokens that can be processed at once by an LLM model.
-	fn max_context_tokens(&self) -> T::Tokens;
+	fn max_context_length(&self) -> T::Tokens;
 
 	/// Get the model name.
+	///
+	/// This is used for logging purposes but also can be used to fetch a specific model based on
+	/// `&self`. For example, the model passed to [`Loom::weave`] can be represented as an enum with
+	/// a multitude of variants, each representing a different model.
 	fn name(&self) -> &'static str;
 
-	/// Count the number of tokens in the string.
+	/// Calculates the number of tokens in a string.
+	///
+	/// This may vary depending on the type of tokens used by the LLM. In the case of ChatGPT,
+	/// each token represents roughly 75% of a word and can be calculated using the [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs#counting-token-length) crate.
 	fn count_tokens(content: String) -> Result<T::Tokens>;
 }
 
@@ -383,7 +386,7 @@ pub trait Loom<T: Config> {
 			return Err(LoomError::from(WeaveError::BadConfig(format!(
 				"Number of tokens cannot exceed model's max tokens ({}): {}",
 				model.name(),
-				model.max_context_tokens()
+				model.max_context_length()
 			)))
 			.into());
 		}
@@ -419,7 +422,7 @@ pub trait Loom<T: Config> {
 
 	/// Get the maximum number of tokens allowed for the current [`Config::Model`].
 	fn get_max_token_limit(model: impl Llm<T>) -> T::Tokens {
-		let max_tokens = model.max_context_tokens();
+		let max_tokens = model.max_context_length();
 		let token_threshold: T::Tokens =
 			T::Tokens::from_u8(T::TOKEN_THRESHOLD_PERCENTILE.get()).unwrap();
 		let tokens = max_tokens.saturating_mul(&token_threshold);

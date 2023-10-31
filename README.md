@@ -1,6 +1,6 @@
 <div align="center">
-    <img src="./assets/loom-logo-1024x1024.png" width="50%"">
- 
+    <img src="./assets/loom-logo-1024x1024.png" width="50%">
+
 [<img alt="github" src="https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loom)
 [<img alt="github" src="https://img.shields.io/badge/github-snowmead/loom-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loom)
 [<img alt="crates.io" src="https://img.shields.io/crates/v/loom.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/loom)
