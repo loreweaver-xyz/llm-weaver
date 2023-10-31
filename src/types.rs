@@ -7,6 +7,7 @@ use crate::{Config, Llm};
 
 pub type PromptModelTokens<T> = <<T as Config>::PromptModel as Llm<T>>::Tokens;
 pub type SummaryModelTokens<T> = <<T as Config>::SummaryModel as Llm<T>>::Tokens;
+pub type PromptModelRequest<T> = <<T as Config>::PromptModel as Llm<T>>::Request;
 
 /// Base type for all configuration parameters.
 pub type F32 = f32;

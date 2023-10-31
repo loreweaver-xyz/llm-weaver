@@ -53,7 +53,7 @@ pub mod types;
 pub use storage::TapestryChestHandler;
 use types::{LoomError, SummaryModelTokens, WeaveError, ASSISTANT_ROLE, SYSTEM_ROLE};
 
-use crate::types::{PromptModelTokens, WrapperRole};
+use crate::types::{PromptModelRequest, PromptModelTokens, WrapperRole};
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -89,7 +89,7 @@ pub trait TapestryId: Debug + Clone + Send + Sync + 'static {
 #[derive(Debug)]
 pub struct LlmConfig<T: Config, L: Llm<T>> {
 	pub model: L,
-	pub params: L::PromptParameters,
+	pub params: L::Parameters,
 }
 
 #[async_trait]
@@ -98,7 +98,7 @@ pub trait Llm<T: Config>:
 {
 	/// Token to word ratio.
 	///
-	/// Every token equates to 75% of a word.
+	/// Defaults to `75%`
 	const TOKEN_WORD_RATIO: BoundedU8<0, 100> = BoundedU8::new(75).unwrap();
 
 	/// Tokens are an LLM concept which represents pieces of words. For example, each ChatGPT token
@@ -108,7 +108,7 @@ pub trait Llm<T: Config>:
 	/// counting the number of tokens in a string.
 	///
 	/// This type is configurable to allow for different types of tokens to be used. For example,
-	/// [`u16`] can be used to represent the number of tokens in a string. This is in line with
+	/// [`u16`] can be used to represent the number of tokens in a string.
 	type Tokens: Copy
 		+ ToRedisArgs
 		+ FromStr
@@ -130,34 +130,30 @@ pub trait Llm<T: Config>:
 		+ Sync
 		+ Send;
 	/// Type representing the prompt request.
-	type PromptRequest: Clone + From<ContextMessage<T>> + Send;
+	type Request: Clone + From<ContextMessage<T>> + Send;
 	/// Type representing the response to a prompt.
-	type PromptResponse: Clone + Into<Option<String>> + Send;
+	type Response: Clone + Into<Option<String>> + Send;
 	/// Type representing the parameters for a prompt.
-	type PromptParameters: Debug + Clone + Send + Sync;
+	type Parameters: Debug + Clone + Send + Sync;
 
 	/// The maximum number of tokens that can be processed at once by an LLM model.
 	fn max_context_length(&self) -> Self::Tokens;
-
 	/// Get the model name.
 	///
 	/// This is used for logging purposes but also can be used to fetch a specific model based on
 	/// `&self`. For example, the model passed to [`Loom::weave`] can be represented as an enum with
 	/// a multitude of variants, each representing a different model.
 	fn name(&self) -> &'static str;
-
 	/// Calculates the number of tokens in a string.
 	///
 	/// This may vary depending on the type of tokens used by the LLM. In the case of ChatGPT, can be calculated using the [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs#counting-token-length) crate.
 	fn count_tokens(content: String) -> Result<Self::Tokens>;
-
 	/// Prompt LLM with the supplied messages and parameters.
 	async fn prompt(
 		&self,
-		msgs: Vec<Self::PromptRequest>,
-		params: &Self::PromptParameters,
-	) -> Result<Self::PromptResponse>;
-
+		msgs: Vec<Self::Request>,
+		params: &Self::Parameters,
+	) -> Result<Self::Response>;
 	/// Get the maximum number of tokens allowed for the current [`Config::PromptModel`].
 	fn get_max_token_limit(&self) -> Self::Tokens {
 		let max_tokens = self.max_context_length();
@@ -165,12 +161,10 @@ pub trait Llm<T: Config>:
 		let tokens = max_tokens.saturating_mul(&token_threshold);
 		tokens.checked_div(&Self::Tokens::from_u8(100).unwrap()).unwrap()
 	}
-
 	/// [`ContextMessage`]s to [`Llm::PromptRequest`] conversion.
-	fn ctx_msgs_to_prompt_requests(&self, msgs: &[ContextMessage<T>]) -> Vec<Self::PromptRequest> {
+	fn ctx_msgs_to_prompt_requests(&self, msgs: &[ContextMessage<T>]) -> Vec<Self::Request> {
 		msgs.iter().map(|m| m.clone().into()).collect()
 	}
-
 	/// Convert tokens to words.
 	///
 	/// In the case of ChatGPT, each token represents roughly 75% of a word.
@@ -288,11 +282,10 @@ pub trait Loom<T: Config> {
 		tapestry_id: TID,
 		system: String,
 		msgs: Vec<ContextMessage<T>>,
-	) -> Result<<<T as Config>::PromptModel as Llm<T>>::PromptResponse> {
+	) -> Result<<<T as Config>::PromptModel as Llm<T>>::Response> {
 		let system_ctx_msg =
 			Self::build_context_message(WrapperRole::from(SYSTEM_ROLE.to_string()), system, None);
-		let sys_req_msg: <<T as Config>::PromptModel as Llm<T>>::PromptRequest =
-			system_ctx_msg.clone().into();
+		let sys_req_msg: PromptModelRequest<T> = system_ctx_msg.clone().into();
 
 		// get latest tapestry fragment instance from storage
 		let tapestry_fragment = T::TapestryChest::get_tapestry_fragment(tapestry_id.clone(), None)
@@ -312,12 +305,11 @@ pub trait Loom<T: Config> {
 		);
 		req_msgs.append(&mut ctx_msgs);
 
-		let mut maybe_summary_text: Option<String> = None;
-		let msgs_tokens: PromptModelTokens<T> = msgs.iter().fold::<PromptModelTokens<T>, _>(
+		let mut maybe_summary_text = None;
+		let msgs_tokens = msgs.iter().fold(
 			PromptModelTokens::<T>::from_u8(0).unwrap(),
-			|acc: PromptModelTokens<T>, m: &ContextMessage<T>| {
-				let tokens: PromptModelTokens<T> =
-					T::PromptModel::count_tokens(m.content.clone()).unwrap_or_default();
+			|acc, m: &ContextMessage<T>| {
+				let tokens = T::PromptModel::count_tokens(m.content.clone()).unwrap_or_default();
 				acc.saturating_add(&tokens)
 			},
 		);
@@ -336,10 +328,8 @@ pub trait Loom<T: Config> {
 				format!("\n\"\"\"\n {}", s),
 				None,
 			);
-			let summary_req_msg: <<T as Config>::PromptModel as Llm<T>>::PromptRequest =
-				summary_ctx_msg.clone().into();
 
-			req_msgs.push_front(summary_req_msg.clone());
+			req_msgs.push_front(summary_ctx_msg.clone().into());
 
 			// keep system and summary messages
 			req_msgs.truncate(2);
@@ -426,7 +416,7 @@ pub trait Loom<T: Config> {
 			.model
 			.ctx_msgs_to_prompt_requests(&tapestry_fragment.context_messages);
 
-		let summary_model_tokens: SummaryModelTokens<T> =
+		let summary_model_tokens =
 			T::convert_prompt_tokens_to_summary_model_tokens(tapestry_fragment.context_tokens);
 
 		let gen_summary_prompt = Self::build_context_message(
