@@ -1,11 +1,11 @@
 <div align="center">
     <img src="./assets/loom-logo-1024x1024.png" width="60%">
 
-[<img alt="github" src="https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loom)
-[<img alt="github" src="https://img.shields.io/badge/github-snowmead/loom-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/loom)
-[<img alt="crates.io" src="https://img.shields.io/crates/v/loom.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/loom)
-[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-loom-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/loom)
-[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/snowmead/loom/rust.yml?branch=main&style=for-the-badge" height="20">](https://github.com/snowmead/loom/actions?query=branch%3Amain)
+[<img alt="github" src="https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/llm-weaver)
+[<img alt="github" src="https://img.shields.io/badge/github-snowmead/llm-weaver-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/llm-weaver)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/llm-weaver.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/llm-weaver)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-llm-weaver-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/llm-weaver)
+[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/snowmead/llm-weaver/rust.yml?branch=main&style=for-the-badge" height="20">](https://github.com/snowmead/llm-weaver/actions?query=branch%3Amain)
 </div>
 
 # LLM Weaver
@@ -20,7 +20,7 @@ Once a certain threshold of context tokens is reached, the library will summariz
 
 ## Usage
 
-Follow the [crate level documentation](https://docs.rs/loom/latest/loom/) for a detailed explanation of how to use the library.
+Follow the [crate level documentation](https://docs.rs/llm-weaver/latest/llm-weaver/) for a detailed explanation of how to use the library.
 
 ## Use Cases
 
