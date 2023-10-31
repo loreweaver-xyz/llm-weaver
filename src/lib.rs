@@ -47,7 +47,6 @@ use storage::TapestryChest;
 use tracing::{debug, error, instrument};
 
 pub mod storage;
-mod tests;
 pub mod types;
 
 pub use storage::TapestryChestHandler;
