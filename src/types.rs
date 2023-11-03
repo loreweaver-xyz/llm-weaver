@@ -88,6 +88,7 @@ impl Display for WeaveError {
 pub enum StorageError {
 	Redis(redis::RedisError),
 	Parsing,
+	NotFound,
 }
 
 impl Display for StorageError {
@@ -95,6 +96,7 @@ impl Display for StorageError {
 		match self {
 			StorageError::Redis(e) => write!(f, "Redis error: {}", e),
 			StorageError::Parsing => write!(f, "Parsing error"),
+			StorageError::NotFound => write!(f, "Not found"),
 		}
 	}
 }

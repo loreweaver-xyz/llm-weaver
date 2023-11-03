@@ -36,7 +36,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bounded_integer::BoundedU8;
+pub use bounded_integer::BoundedU8;
 use num_traits::{
 	CheckedAdd, CheckedDiv, FromPrimitive, SaturatingAdd, SaturatingMul, SaturatingSub,
 	ToPrimitive, Unsigned,

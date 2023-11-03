@@ -10,10 +10,10 @@ use crate::{
 	Config, ContextMessage, TapestryFragment, TapestryId,
 };
 
+/// The key used to store the number of instances of a tapestry.
+const INSTANCE_COUNT: &str = "instance_count";
+
 /// A storage handler trait designed for saving and retrieving fragments of a tapestry.
-///
-/// The `TapestryChestHandler` trait provides an asynchronous interface for implementing various
-/// storage handlers to manage tapestry fragments.
 ///
 /// # Usage
 ///
@@ -21,14 +21,19 @@ use crate::{
 /// tailored to specific use-cases or storage backends, such as databases, file systems, or
 /// in-memory stores.
 ///
-/// Checkout the out of the box implementation [`TapestryChest`] whichs uses Redis as the storage
-/// backend.
+/// You can see how the default [`TapestryChest`] struct implementes this trait which uses Redis as
+/// its storage backend.
 #[async_trait]
 pub trait TapestryChestHandler<T: Config> {
 	/// Defines the error type returned by the handler methods.
 	type Error: Display + Debug;
 
 	/// Saves a tapestry fragment.
+	///
+	/// Tapestry fragments are stored incrementally, also refered to as "instances". Each instance
+	/// is identified by an integer, starting at 1 and incrementing by 1 for each new instance.
+	///
+	/// This method is executed primarily by the [`crate::Loom::weave`] function.
 	///
 	/// # Parameters
 	///
@@ -38,12 +43,6 @@ pub trait TapestryChestHandler<T: Config> {
 	///     - A boolean flag indicating whether the tapestry instance should be incremented.
 	///     - This should typically be `true` when saving a new instance of [`TapestryFragment`],
 	///       and `false` when updating an existing one.
-	///
-	/// # Returns
-	///
-	/// Returns `Result<(), Self::Error>`. On successful storage, it returns `Ok(())`. If the
-	/// storage operation fails, it should return an `Err` variant containing an error of type
-	/// `Self::Error`.
 	async fn save_tapestry_fragment<TID: TapestryId>(
 		tapestry_id: TID,
 		tapestry_fragment: TapestryFragment<T>,
@@ -56,6 +55,10 @@ pub trait TapestryChestHandler<T: Config> {
 		tapestry_id: TID,
 		metadata: M,
 	) -> crate::Result<()>;
+	/// Retrieves the number of instances of a tapestry.
+	///
+	/// Returns None if the tapestry does not exist.
+	async fn get_tapestry<TID: TapestryId>(tapestry_id: TID) -> crate::Result<Option<u16>>;
 	/// Retrieves the last tapestry fragment, or a fragment at a specified instance.
 	///
 	/// # Parameters
@@ -67,8 +70,7 @@ pub trait TapestryChestHandler<T: Config> {
 	/// # Returns
 	///
 	/// On successful retrieval, it returns `Ok(Some(TapestryFragment))` or `Ok(None)` if no
-	/// fragment was found. If the retrieval operation fails, it should return an `Err` variant
-	/// containing an error of type `Self::Error`.
+	/// fragment was found.
 	async fn get_tapestry_fragment<TID: TapestryId>(
 		tapestry_id: TID,
 		instance: Option<u64>,
@@ -78,6 +80,8 @@ pub trait TapestryChestHandler<T: Config> {
 		tapestry_id: TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<M>>;
+	/// Deletes a tapestry and all its instances.
+	async fn delete_tapestry<TID: TapestryId>(tapestry_id: TID) -> crate::Result<()>;
 }
 
 /// Default implementation of [`Config::TapestryChest`]
@@ -95,26 +99,28 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		increment: bool,
 	) -> crate::Result<()> {
 		let client = get_client().await.expect("Failed to get redis client");
-		let mut con = client.get_async_connection().await.expect("Failed to get redis connection");
+		let mut con = client.get_async_connection().await?;
 		debug!("Connected to Redis");
 
 		let base_key: &String = &tapestry_id.base_key();
 
-		let mut instance = match get_score_from_last_zset_member(&mut con, base_key).await? {
+		let mut instance = match get_last_instance(&mut con, base_key, None).await? {
 			Some(instance) => instance,
 			None => {
-				con.zadd(base_key, 0, 0).await.map_err(|e| {
-					error!("Failed to save tapestry fragment to Redis: {}", e);
+				con.hset(&base_key, INSTANCE_COUNT, 1).await.map_err(|e| {
+					error!("Failed to save \"instance_count\" member to {} key: {}", base_key, e);
 					LoomError::from(StorageError::Redis(e))
 				})?;
 
-				0
+				debug!("Saved \"instance_count\" member to {} key", base_key);
+
+				1
 			},
 		};
 
 		if increment {
-			con.zincr(base_key, 0, 1).await.map_err(|e| {
-				error!("Failed to save tapestry fragment to Redis: {}", e);
+			con.hincr(&base_key, INSTANCE_COUNT, 1).await.map_err(|e| {
+				error!("Failed to increment \"instance_count\" member of {} key: {}", base_key, e);
 				LoomError::from(StorageError::Redis(e))
 			})?;
 
@@ -123,19 +129,19 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 			debug!("Incremented instance to {} for {}", instance, base_key);
 		}
 
-		let key = format!("{base_key}:{instance}");
+		let instance_key = format!("{base_key}:{instance}");
 
-		con.hset(&key, "context_tokens", tapestry_fragment.context_tokens)
+		con.hset(&instance_key, "context_tokens", tapestry_fragment.context_tokens)
 			.await
 			.map_err(|e| {
-				error!("Failed to save \"context_tokens\" member to {} key: {}", key, e);
+				error!("Failed to save \"context_tokens\" member to {} key: {}", instance_key, e);
 				LoomError::from(StorageError::Redis(e))
 			})?;
 
-		debug!("Saved \"context_tokens\" member to {} key", key);
+		debug!("Saved \"context_tokens\" member to {} key", instance_key);
 
 		con.hset(
-			&key,
+			&instance_key,
 			"context_messages",
 			serde_json::to_vec(&tapestry_fragment.context_messages).map_err(|e| {
 				error!("Failed to serialize tapestry fragment context_messages: {}", e);
@@ -144,11 +150,11 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		)
 		.await
 		.map_err(|e| {
-			error!("Failed to save \"context_messages\" member to {} key: {}", key, e);
+			error!("Failed to save \"context_messages\" member to {} key: {}", instance_key, e);
 			LoomError::from(StorageError::Redis(e))
 		})?;
 
-		debug!("Saved \"context_messages\" member to {} key", key);
+		debug!("Saved \"context_messages\" member to {} key", instance_key);
 
 		Ok(())
 	}
@@ -158,20 +164,15 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		metadata: M,
 	) -> crate::Result<()> {
 		let client = get_client().await.expect("Failed to get redis client");
-		let mut con = client.get_async_connection().await.expect("Failed to get redis connection");
+		let mut con = client.get_async_connection().await?;
 		debug!("Connected to Redis");
 
 		let base_key: &String = &tapestry_id.base_key();
 
-		let instance = match get_score_from_last_zset_member(&mut con, base_key).await? {
+		let instance = match get_last_instance(&mut con, base_key, None).await? {
 			Some(instance) => instance,
 			None => {
-				con.zadd(base_key, 0, 0).await.map_err(|e| {
-					error!("Failed to save tapestry fragment to Redis: {}", e);
-					LoomError::from(StorageError::Redis(e))
-				})?;
-
-				0
+				return Err(LoomError::from(StorageError::NotFound).into());
 			},
 		};
 
@@ -187,22 +188,40 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		Ok(())
 	}
 
+	async fn get_tapestry<TID: TapestryId>(tapestry_id: TID) -> crate::Result<Option<u16>> {
+		let client = get_client().await.expect("Failed to get redis client");
+		let mut con = client.get_async_connection().await?;
+
+		let base_key = &tapestry_id.base_key();
+
+		if !con.exists(base_key).await.map_err(|e| {
+			error!("Failed to check if {} tapestry_id exists: {}", base_key, e);
+			LoomError::from(StorageError::Redis(e))
+		})? {
+			return Ok(None);
+		}
+
+		let tapestry: u16 = con.hget(base_key, INSTANCE_COUNT).await.map_err(|e| {
+			error!("Failed to get {} tapestry_id: {}", base_key, e);
+			LoomError::from(StorageError::Redis(e))
+		})?;
+
+		Ok(Some(tapestry))
+	}
+
 	async fn get_tapestry_fragment<TID: TapestryId>(
 		tapestry_id: TID,
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment<T>>> {
 		let client = get_client().await.expect("Failed to get redis client");
-		let mut con = client.get_async_connection().await.expect("Failed to get redis connection");
+		let mut con = client.get_async_connection().await?;
 		debug!("Connected to Redis");
 
 		let base_key = &tapestry_id.base_key();
 
-		let instance = match instance {
+		let instance = match get_last_instance(&mut con, base_key, instance).await? {
 			Some(instance) => instance,
-			None => match get_score_from_last_zset_member(&mut con, base_key).await? {
-				Some(instance) => instance,
-				None => return Ok(None),
-			},
+			None => return Ok(None),
 		};
 
 		let key = format!("{base_key}:{instance}");
@@ -243,17 +262,14 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		instance: Option<u64>,
 	) -> crate::Result<Option<M>> {
 		let client = get_client().await.expect("Failed to get redis client");
-		let mut con = client.get_async_connection().await.expect("Failed to get redis connection");
+		let mut con = client.get_async_connection().await?;
 		debug!("Connected to Redis");
 
 		let base_key = &tapestry_id.base_key();
 
-		let instance = match instance {
+		let instance = match get_last_instance(&mut con, base_key, instance).await? {
 			Some(instance) => instance,
-			None => match get_score_from_last_zset_member(&mut con, base_key).await? {
-				Some(instance) => instance,
-				None => return Ok(None),
-			},
+			None => return Ok(None),
 		};
 
 		let key = format!("{base_key}:{instance}");
@@ -270,12 +286,52 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 
 		Ok(Some(tapestry_metadata))
 	}
+
+	async fn delete_tapestry<TID: TapestryId>(tapestry_id: TID) -> crate::Result<()> {
+		let client = get_client().await.expect("Failed to get redis client");
+		let mut con = client.get_async_connection().await?;
+
+		let tapestry_id = &tapestry_id.base_key();
+
+		if !con.exists(tapestry_id).await.map_err(|e| {
+			error!("Failed to check if {} tapestry_id exists: {}", tapestry_id, e);
+			LoomError::from(StorageError::Redis(e))
+		})? {
+			debug!("{} tapestry_id does not exist", tapestry_id);
+			return Ok(());
+		}
+
+		let instance_count: u16 = con.hget(tapestry_id, INSTANCE_COUNT).await.map_err(|e| {
+			error!("Failed to get {} tapestry_id: {}", tapestry_id, e);
+			LoomError::from(StorageError::Redis(e))
+		})?;
+
+		for i in 1..=instance_count {
+			let instance_key = format!("{}:{}", tapestry_id, i);
+
+			debug!("Deleting {} instance", instance_key);
+
+			con.del(&instance_key).await.map_err(|e| {
+				error!("Failed to delete {} tapestry_id: {}", tapestry_id, e);
+				LoomError::from(StorageError::Redis(e))
+			})?;
+		}
+
+		con.del(tapestry_id).await.map_err(|e| {
+			error!("Failed to delete {} tapestry_id: {}", tapestry_id, e);
+			LoomError::from(StorageError::Redis(e))
+		})?;
+
+		debug!("Deleted {} tapestry_id and {} instances", tapestry_id, instance_count);
+
+		Ok(())
+	}
 }
 
 /// Storage client to access GCP Storage
 static REDIS_CLIENT: OnceCell<Client> = OnceCell::const_new();
 
-/// Get and/or initialize the Redis Client.
+/// Get the Redis Client.
 #[instrument]
 async fn get_client() -> Result<Client, redis::RedisError> {
 	Ok(REDIS_CLIENT
@@ -300,25 +356,34 @@ async fn get_client() -> Result<Client, redis::RedisError> {
 		.clone())
 }
 
-async fn get_score_from_last_zset_member(
+/// Get the last instance number of a tapestry.
+///
+/// If the tapestry does not exist, it will be created and the instance number will be set to 1.
+///
+/// Passing the `instance` parameter will return the instance number if it exists, or an error if it
+/// does not.
+async fn get_last_instance(
 	con: &mut Connection,
 	base_key: &String,
-) -> super::Result<Option<u64>> {
-	debug!("Executing ZRANGE_WITHSCORES {}...", base_key);
-	let member_score: Vec<String> = con.zrange_withscores(base_key, -1, -1).await.map_err(|e| {
-		error!("Failed to save tapestry fragment to Redis: {}", e);
-		LoomError::from(StorageError::Redis(e))
-	})?;
-	debug!("Result ZRANGE_WITHSCORES: {:?}", member_score);
+	instance: Option<u64>,
+) -> crate::Result<Option<u64>> {
+	Ok(match con.exists(base_key).await? {
+		true => match instance {
+			Some(instance) =>
+				if con.exists(&format!("{}:{}", base_key, instance)).await? {
+					Some(instance)
+				} else {
+					return Err(LoomError::from(StorageError::NotFound).into());
+				},
+			None => {
+				let instance_count = con.hget(base_key, INSTANCE_COUNT).await.map_err(|e| {
+					error!("Failed to get {} tapestry_id: {}", base_key, e);
+					LoomError::from(StorageError::Redis(e))
+				})?;
 
-	let instance = match member_score.is_empty() {
-		true => return Ok(None),
-		false if member_score.len() == 2 => member_score[1].parse::<u64>().unwrap_or(0),
-		false => {
-			error!("Unexpected member score length: {}", member_score.len());
-			return Err(LoomError::from(StorageError::Parsing).into());
+				instance_count
+			},
 		},
-	};
-
-	Ok(Some(instance))
+		false => None,
+	})
 }
