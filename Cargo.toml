@@ -35,3 +35,4 @@ thiserror = "1.0.49"
 async-trait = "0.1.73"
 num-traits = "0.2.17"
 bounded-integer = { version = "0.5.7", features = ["types", "num-traits02"] }
+aquamarine = "0.3.2"

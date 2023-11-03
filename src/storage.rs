@@ -84,7 +84,7 @@ pub trait TapestryChestHandler<T: Config> {
 	async fn delete_tapestry<TID: TapestryId>(tapestry_id: TID) -> crate::Result<()>;
 }
 
-/// Default implementation of [`Config::TapestryChest`]
+/// Default implementation of [`Config::Chest`]
 ///
 /// Storing and retrieving data using a Redis instance.
 pub struct TapestryChest;

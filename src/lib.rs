@@ -9,11 +9,28 @@
 //! history as [`TapestryFragment`] instances. This trait is highly configurable through the
 //! [`Config`] trait to support a wide range of use cases.
 //!
+//! # Nomenclature
+//!
+//! - **Tapestry**: A collection of [`TapestryFragment`] instances.
+//! - **TapestryFragment**: A single part of a conversation containing a list of messages along with
+//!   other metadata.
+//! - **ContextMessage**: Represents a single message in a [`TapestryFragment`] instance.
+//! - **Loom**: The machine that drives all of the core methods that should be used across any
+//!   service that needs to prompt LLM and receive a response.
+//! - **LLM**: Language Model.
+//!
+//! # Architecture
+//!
+//! Please refer to the [`architecture::Diagram`] for a visual representation of the core
+//! components of this library.
+//!
+//! # Usage
+//!
 //! You must implement the [`Config`] trait, which defines the necessary types and methods needed by
 //! [`Loom`].
 //!
-//! If you are using the default implementation of [`Config::TapestryChest`], it is expected that a
-//! Redis instance is running and that the following environment variables are set:
+//! This library uses Redis as the default storage backend for storing [`TapestryFragment`]. It is
+//! expected that a Redis instance is running and that the following environment variables are set:
 //!
 //! - `REDIS_PROTOCOL`
 //! - `REDIS_HOST`
@@ -22,11 +39,12 @@
 //!
 //! Should there be a need to integrate a distinct storage backend, you have the flexibility to
 //! create a custom handler by implementing the [`TapestryChestHandler`] trait and injecting it
-//! into the [`Config::TapestryChest`] associated type.
+//! into the [`Config::Chest`] associated type.
 #![feature(async_closure)]
 #![feature(associated_type_defaults)]
 #![feature(more_qualified_paths)]
 #![feature(const_option)]
+
 use std::{
 	collections::VecDeque,
 	fmt::{Debug, Display},
@@ -45,6 +63,7 @@ use serde::{Deserialize, Serialize};
 use storage::TapestryChest;
 use tracing::{debug, error, instrument};
 
+pub mod architecture;
 pub mod storage;
 pub mod types;
 
@@ -159,7 +178,7 @@ pub trait Llm<T: Config>:
 		let tokens = max_tokens.saturating_mul(&token_threshold);
 		tokens.checked_div(&Self::Tokens::from_u8(100).unwrap()).unwrap()
 	}
-	/// [`ContextMessage`]s to [`Llm::PromptRequest`] conversion.
+	/// [`ContextMessage`]s to [`Llm::Request`] conversion.
 	fn ctx_msgs_to_prompt_requests(&self, msgs: &[ContextMessage<T>]) -> Vec<Self::Request> {
 		msgs.iter().map(|m| m.clone().into()).collect()
 	}
@@ -192,7 +211,7 @@ pub trait Config: Debug + Sized + Clone + Default + Send + Sync + 'static {
 	///
 	/// Defaults to [`TapestryChest`]. Using this default requires you to supply the `hostname`,
 	/// `port` and `credentials` to connect to your instance.
-	type TapestryChest: TapestryChestHandler<Self> = TapestryChest;
+	type Chest: TapestryChestHandler<Self> = TapestryChest;
 
 	/// Convert [`Config::PromptModel`] to [`Config::SummaryModel`] tokens.
 	fn convert_prompt_tokens_to_summary_model_tokens(
@@ -268,11 +287,11 @@ pub trait Loom<T: Config> {
 	///
 	/// # Parameters
 	///
-	/// - `tapestry_id`: The [`TapestryId`] to prompt and save context messages to.
-	/// - `system`: The system message to prompt LLM with.
-	///  the current [`Config::PromptModel`].
-	/// - `msgs`: The list of [`ContextMessage`]s to prompt LLM with.
-	/// - `prompt_params`: The [`Config::PromptParameters`] to use when prompting LLM.
+	/// - `prompt_config`: The [`Config::PromptModel`] to use for prompting LLM.
+	/// - `summary_model_config`: The [`Config::SummaryModel`] to use for generating summaries.
+	/// - `tapestry_id`: The [`TapestryId`] to use for storing the [`TapestryFragment`] instance.
+	/// - `system`: The system message to be used for the current [`TapestryFragment`] instance.
+	/// - `msgs`: The messages to prompt the LLM with.
 	#[instrument]
 	async fn weave<TID: TapestryId>(
 		prompt_config: LlmConfig<T, T::PromptModel>,
@@ -286,7 +305,7 @@ pub trait Loom<T: Config> {
 		let sys_req_msg: PromptModelRequest<T> = system_ctx_msg.clone().into();
 
 		// get latest tapestry fragment instance from storage
-		let tapestry_fragment = T::TapestryChest::get_tapestry_fragment(tapestry_id.clone(), None)
+		let tapestry_fragment = T::Chest::get_tapestry_fragment(tapestry_id.clone(), None)
 			.await?
 			.unwrap_or_default();
 
@@ -386,7 +405,7 @@ pub trait Loom<T: Config> {
 
 		// save tapestry fragment to storage
 		// when summarized, the tapestry_fragment will be saved under a new instance
-		T::TapestryChest::save_tapestry_fragment(
+		T::Chest::save_tapestry_fragment(
 			tapestry_id,
 			tapestry_fragment_to_persist,
 			is_summary_generated,
