@@ -107,7 +107,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		let mut instance = match get_last_instance(&mut con, base_key, None).await? {
 			Some(instance) => instance,
 			None => {
-				con.hset(&base_key, INSTANCE_COUNT, 1).await.map_err(|e| {
+				con.hset(base_key, INSTANCE_COUNT, 1).await.map_err(|e| {
 					error!("Failed to save \"instance_count\" member to {} key: {}", base_key, e);
 					LoomError::from(StorageError::Redis(e))
 				})?;
@@ -119,7 +119,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		};
 
 		if increment {
-			con.hincr(&base_key, INSTANCE_COUNT, 1).await.map_err(|e| {
+			con.hincr(base_key, INSTANCE_COUNT, 1).await.map_err(|e| {
 				error!("Failed to increment \"instance_count\" member of {} key: {}", base_key, e);
 				LoomError::from(StorageError::Redis(e))
 			})?;
@@ -194,10 +194,12 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 
 		let base_key = &tapestry_id.base_key();
 
-		if !con.exists(base_key).await.map_err(|e| {
+		let exists: bool = con.exists(base_key).await.map_err(|e| {
 			error!("Failed to check if {} tapestry_id exists: {}", base_key, e);
 			LoomError::from(StorageError::Redis(e))
-		})? {
+		})?;
+
+		if !exists {
 			return Ok(None);
 		}
 
@@ -293,10 +295,12 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 
 		let tapestry_id = &tapestry_id.base_key();
 
-		if !con.exists(tapestry_id).await.map_err(|e| {
+		let exists: bool = con.exists(tapestry_id).await.map_err(|e| {
 			error!("Failed to check if {} tapestry_id exists: {}", tapestry_id, e);
 			LoomError::from(StorageError::Redis(e))
-		})? {
+		})?;
+
+		if !exists {
 			debug!("{} tapestry_id does not exist", tapestry_id);
 			return Ok(());
 		}
@@ -375,14 +379,10 @@ async fn get_last_instance(
 				} else {
 					return Err(LoomError::from(StorageError::NotFound).into());
 				},
-			None => {
-				let instance_count = con.hget(base_key, INSTANCE_COUNT).await.map_err(|e| {
-					error!("Failed to get {} tapestry_id: {}", base_key, e);
-					LoomError::from(StorageError::Redis(e))
-				})?;
-
-				instance_count
-			},
+			None => con.hget(base_key, INSTANCE_COUNT).await.map_err(|e| {
+				error!("Failed to get {} tapestry_id: {}", base_key, e);
+				LoomError::from(StorageError::Redis(e))
+			})?,
 		},
 		false => None,
 	})

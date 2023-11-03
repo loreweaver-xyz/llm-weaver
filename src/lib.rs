@@ -27,7 +27,6 @@
 #![feature(associated_type_defaults)]
 #![feature(more_qualified_paths)]
 #![feature(const_option)]
-
 use std::{
 	collections::VecDeque,
 	fmt::{Debug, Display},
