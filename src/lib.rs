@@ -58,7 +58,7 @@ use num_traits::{
 	CheckedAdd, CheckedDiv, FromPrimitive, SaturatingAdd, SaturatingMul, SaturatingSub,
 	ToPrimitive, Unsigned,
 };
-use redis::ToRedisArgs;
+pub use redis::{RedisWrite, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use storage::TapestryChest;
 use tracing::{debug, error, instrument};

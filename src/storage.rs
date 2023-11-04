@@ -51,7 +51,7 @@ pub trait TapestryChestHandler<T: Config> {
 	/// Save tapestry metadata.
 	///
 	/// Based on application use cases, you can add aditional data for a given [`TapestryId`]
-	async fn save_tapestry_metadata<TID: TapestryId, M: ToRedisArgs + Send + Sync>(
+	async fn save_tapestry_metadata<TID: TapestryId, M: ToRedisArgs + Debug + Clone + Send + Sync>(
 		tapestry_id: TID,
 		metadata: M,
 	) -> crate::Result<()>;
@@ -76,9 +76,8 @@ pub trait TapestryChestHandler<T: Config> {
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment<T>>>;
 	/// Retrieves the last tapestry metadata, or a metadata at a specified instance.
-	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Default>(
+	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
 		tapestry_id: TID,
-		instance: Option<u64>,
 	) -> crate::Result<Option<M>>;
 	/// Deletes a tapestry and all its instances.
 	async fn delete_tapestry<TID: TapestryId>(tapestry_id: TID) -> crate::Result<()>;
@@ -159,7 +158,10 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		Ok(())
 	}
 
-	async fn save_tapestry_metadata<TID: TapestryId, M: ToRedisArgs + Send + Sync>(
+	async fn save_tapestry_metadata<
+		TID: TapestryId,
+		M: ToRedisArgs + Debug + Clone + Send + Sync,
+	>(
 		tapestry_id: TID,
 		metadata: M,
 	) -> crate::Result<()> {
@@ -167,23 +169,14 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		let mut con = client.get_async_connection().await?;
 		debug!("Connected to Redis");
 
-		let base_key: &String = &tapestry_id.base_key();
+		let key: &String = &tapestry_id.base_key();
 
-		let instance = match get_last_instance(&mut con, base_key, None).await? {
-			Some(instance) => instance,
-			None => {
-				return Err(LoomError::from(StorageError::NotFound).into());
-			},
-		};
-
-		let key = format!("{base_key}:{instance}");
-
-		con.hset(&key, "metadata", metadata).await.map_err(|e| {
+		con.hset(&key, "metadata", metadata.clone()).await.map_err(|e| {
 			error!("Failed to save \"metadata\" member to {} key: {}", key, e);
 			LoomError::from(StorageError::Redis(e))
 		})?;
 
-		debug!("Saved \"metadata\" member to {} key", key);
+		debug!("Saved \"metadata\" member to {} key with metadata {:?}", key, metadata.clone());
 
 		Ok(())
 	}
@@ -259,22 +252,14 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		Ok(Some(tapestry_fragment))
 	}
 
-	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Default>(
+	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
 		tapestry_id: TID,
-		instance: Option<u64>,
 	) -> crate::Result<Option<M>> {
 		let client = get_client().await.expect("Failed to get redis client");
 		let mut con = client.get_async_connection().await?;
 		debug!("Connected to Redis");
 
-		let base_key = &tapestry_id.base_key();
-
-		let instance = match get_last_instance(&mut con, base_key, instance).await? {
-			Some(instance) => instance,
-			None => return Ok(None),
-		};
-
-		let key = format!("{base_key}:{instance}");
+		let key = &tapestry_id.base_key();
 
 		let metadata_raw: Vec<u8> = con.hget(&key, "metadata").await.map_err(|e| {
 			error!("Failed to get \"metadata\" member from {} key: {}", key, e);
