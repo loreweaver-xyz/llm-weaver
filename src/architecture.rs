@@ -1,10 +1,9 @@
-#[cfg_attr(doc, aquamarine::aquamarine)]
 /// The following diagram shows a very high level slimmed down overview of the
 /// architecture of the library and how an application might use it.
 ///
 /// Only the traits [`Loom`](crate::Loom) and [`Config`](crate::Config) are expanded to show some of
 /// their main associated types.
-///
+#[cfg_attr(doc, aquamarine::aquamarine)]
 /// ```mermaid
 /// graph TB
 ///     subgraph Chat Application

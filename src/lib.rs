@@ -173,9 +173,9 @@ pub trait Llm<T: Config>:
 	) -> Result<Self::Response>;
 	/// Get the maximum number of tokens allowed for the current [`Config::PromptModel`].
 	fn get_max_token_limit(&self) -> Self::Tokens {
-		let max_tokens = self.max_context_length();
+		let max_context_length = self.max_context_length();
 		let token_threshold = Self::Tokens::from_u8(T::TOKEN_THRESHOLD_PERCENTILE.get()).unwrap();
-		let tokens = max_tokens.saturating_mul(&token_threshold);
+		let tokens = max_context_length.saturating_mul(&token_threshold);
 		tokens.checked_div(&Self::Tokens::from_u8(100).unwrap()).unwrap()
 	}
 	/// [`ContextMessage`]s to [`Llm::Request`] conversion.

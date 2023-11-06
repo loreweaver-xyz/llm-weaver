@@ -20,7 +20,7 @@ Once a certain threshold of context tokens is reached, the library will summariz
 
 ## Usage
 
-Follow the [crate level documentation](https://docs.rs/llm-weaver/latest/llm-weaver/) for a detailed explanation of how to use the library.
+Follow the [crate level documentation](https://docs.rs/llm-weaver/latest/llm_weaver/) for a detailed explanation of how to use the library.
 
 ## Use Cases
 
