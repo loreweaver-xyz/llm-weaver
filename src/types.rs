@@ -51,6 +51,7 @@ impl From<WrapperRole> for String {
 			WrapperRole::Role(Role::Assistant) => ASSISTANT_ROLE.to_string(),
 			WrapperRole::Role(Role::User) => USER_ROLE.to_string(),
 			WrapperRole::Role(Role::Function) => FUNCTION_ROLE.to_string(),
+			WrapperRole::Role(_) => panic!("Invalid role"),
 		}
 	}
 }
