@@ -132,7 +132,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 				&instance_key,
 				"context_messages",
 				serde_json::to_vec(&tapestry_fragment.context_messages)
-					.map_err(|e| RedisError::from(e))?,
+					.map_err(RedisError::from)?,
 			)
 			.ignore();
 			debug!("Saved \"context_messages\" member to {} key", instance_key);
@@ -158,7 +158,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 
 		let key: &String = &tapestry_id.base_key();
 
-		con.hset(&key, "metadata", metadata.clone()).await.map_err(|e| {
+		con.hset(key, "metadata", metadata.clone()).await.map_err(|e| {
 			error!("Failed to save \"metadata\" member to {} key: {}", key, e);
 			LoomError::from(StorageError::Redis(e))
 		})?;
@@ -247,7 +247,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 
 		let key = &tapestry_id.base_key();
 
-		let metadata_raw: Vec<u8> = con.hget(&key, "metadata").await.map_err(|e| {
+		let metadata_raw: Vec<u8> = con.hget(key, "metadata").await.map_err(|e| {
 			error!("Failed to get \"metadata\" member from {} key: {}", key, e);
 			LoomError::from(StorageError::Redis(e))
 		})?;
