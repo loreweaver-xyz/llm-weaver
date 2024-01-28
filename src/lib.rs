@@ -170,8 +170,13 @@ pub trait Llm<T: Config>:
 		&self,
 		msgs: Vec<Self::Request>,
 		params: &Self::Parameters,
+		max_tokens: Self::Tokens,
 	) -> Result<Self::Response>;
-	/// Get the maximum number of tokens allowed for the current [`Config::PromptModel`].
+	/// Calculate the upperbound of tokens allowed for the current [`Config::PromptModel`] before a
+	/// summary is generated.
+	///
+	/// This is calculated by multiplying the maximum context length (tokens) for the current
+	/// [`Config::PromptModel`] by the [`Config::TOKEN_THRESHOLD_PERCENTILE`] and dividing by 100.
 	fn get_max_token_limit(&self) -> Self::Tokens {
 		let max_context_length = self.max_context_length();
 		let token_threshold = Self::Tokens::from_u8(T::TOKEN_THRESHOLD_PERCENTILE.get()).unwrap();
@@ -370,7 +375,7 @@ pub trait Loom<T: Config> {
 					&[Self::build_context_message(
 						WrapperRole::from(SYSTEM_ROLE.to_string()),
 						format!(
-							"Respond with {} words or less",
+							"Respond with {} tokens or less",
 							prompt_config.model.convert_tokens_to_words(max_tokens)
 						),
 						None,
@@ -382,7 +387,7 @@ pub trait Loom<T: Config> {
 
 		let response = prompt_config
 			.model
-			.prompt(req_msgs.into(), &prompt_config.params)
+			.prompt(req_msgs.into(), &prompt_config.params, max_tokens)
 			.await
 			.map_err(|e| {
 				error!("Failed to prompt LLM: {}", e);
@@ -455,7 +460,11 @@ pub trait Loom<T: Config> {
 
 		let res = summary_model_config
 			.model
-			.prompt(summary_generation_prompt, &summary_model_config.params)
+			.prompt(
+				summary_generation_prompt,
+				&summary_model_config.params,
+				summary_model_config.model.get_max_token_limit(),
+			)
 			.await
 			.map_err(|e| {
 				error!("Failed to prompt LLM: {}", e);
