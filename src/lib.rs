@@ -372,7 +372,7 @@ pub trait Loom<T: Config> {
 
 		let response = prompt_config
 			.model
-			.prompt(req_msgs.tokens, req_msgs.to_vec(), &prompt_config.params, max_tokens)
+			.prompt(req_msgs.tokens, req_msgs.into_vec(), &prompt_config.params, max_tokens)
 			.await
 			.map_err(|e| {
 				error!("Failed to prompt LLM: {}", e);
@@ -446,7 +446,7 @@ pub trait Loom<T: Config> {
 			.model
 			.prompt(
 				summary_generation_prompt.tokens,
-				summary_generation_prompt.to_vec(),
+				summary_generation_prompt.into_vec(),
 				&summary_model_config.params,
 				summary_model_config.model.get_max_token_limit(),
 			)
@@ -537,7 +537,7 @@ impl<T: Config, L: Llm<T>> VecPromptMsgsDeque<T, L> {
 		self.inner.extend(msg_reqs);
 	}
 
-	fn to_vec(self) -> Vec<L::Request> {
+	fn into_vec(self) -> Vec<L::Request> {
 		self.inner.into()
 	}
 }
