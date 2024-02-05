@@ -44,6 +44,7 @@
 #![feature(associated_type_defaults)]
 #![feature(more_qualified_paths)]
 #![feature(const_option)]
+#![feature(anonymous_lifetime_in_impl_trait)]
 
 use std::{
 	collections::VecDeque,
@@ -147,7 +148,7 @@ pub trait Llm<T: Config>:
 		+ Sync
 		+ Send;
 	/// Type representing the prompt request.
-	type Request: Clone + From<ContextMessage<T>> + Send;
+	type Request: Clone + From<ContextMessage<T>> + Display + Send;
 	/// Type representing the response to a prompt.
 	type Response: Clone + Into<Option<String>> + Send;
 	/// Type representing the parameters for a prompt.
@@ -168,6 +169,7 @@ pub trait Llm<T: Config>:
 	/// Prompt LLM with the supplied messages and parameters.
 	async fn prompt(
 		&self,
+		prompt_tokens: Self::Tokens,
 		msgs: Vec<Self::Request>,
 		params: &Self::Parameters,
 		max_tokens: Self::Tokens,
@@ -254,8 +256,8 @@ impl<T: Config> TapestryFragment<T> {
 	/// Add a [`ContextMessage`] to the `context_messages` list.
 	///
 	/// Also increments the `context_tokens` by the number of tokens in the message.
-	fn extend_messages(&mut self, msg: Vec<ContextMessage<T>>) -> Result<()> {
-		for m in msg.iter() {
+	fn extend_messages(&mut self, msgs: Vec<ContextMessage<T>>) -> Result<()> {
+		for m in msgs.iter() {
 			let tokens = T::PromptModel::count_tokens(m.content.clone())?;
 			let new_token_count = match self.context_tokens.checked_add(&tokens) {
 				Some(n) => n,
@@ -305,12 +307,11 @@ pub trait Loom<T: Config> {
 		system: String,
 		msgs: Vec<ContextMessage<T>>,
 	) -> Result<<<T as Config>::PromptModel as Llm<T>>::Response> {
-		let system_ctx_msg =
-			Self::build_context_message(WrapperRole::from(SYSTEM_ROLE.to_string()), system, None);
+		let system_ctx_msg = Self::build_context_message(SYSTEM_ROLE.into(), system, None);
 		let sys_req_msg: PromptModelRequest<T> = system_ctx_msg.clone().into();
 
 		// get latest tapestry fragment instance from storage
-		let tapestry_fragment = T::Chest::get_tapestry_fragment(tapestry_id.clone(), None)
+		let current_tapestry_fragment = T::Chest::get_tapestry_fragment(tapestry_id.clone(), None)
 			.await?
 			.unwrap_or_default();
 
@@ -318,36 +319,32 @@ pub trait Loom<T: Config> {
 		let max_tokens_limit = prompt_config.model.get_max_token_limit();
 
 		// allocate space for the system message
-		let mut req_msgs = VecDeque::with_capacity(tapestry_fragment.context_messages.len() + 1);
+		let mut req_msgs = VecPromptMsgsDeque::<T, T::PromptModel>::with_capacity(
+			current_tapestry_fragment.context_messages.len() + 1,
+		);
 		req_msgs.push_front(sys_req_msg);
 		let mut ctx_msgs = VecDeque::from(
 			prompt_config
 				.model
-				.ctx_msgs_to_prompt_requests(&tapestry_fragment.context_messages),
+				.ctx_msgs_to_prompt_requests(&current_tapestry_fragment.context_messages),
 		);
 		req_msgs.append(&mut ctx_msgs);
 
-		let mut maybe_summary_text = None;
-		let msgs_tokens = msgs.iter().fold(
-			PromptModelTokens::<T>::from_u8(0).unwrap(),
-			|acc, m: &ContextMessage<T>| {
-				let tokens = T::PromptModel::count_tokens(m.content.clone()).unwrap_or_default();
-				acc.saturating_add(&tokens)
-			},
-		);
+		let msgs_tokens = Self::count_tokens_in_messages(msgs.iter());
 
-		// generate summary and start new tapestry instance if context tokens would exceed maximum
-		// amount of allowed tokens
-		if max_tokens_limit <= tapestry_fragment.context_tokens.saturating_add(&msgs_tokens) {
-			maybe_summary_text =
-				Some(Self::generate_summary(summary_model_config, &tapestry_fragment).await?);
-		}
-		let is_summary_generated = maybe_summary_text.is_some();
-
-		let mut tapestry_fragment_to_persist = if let Some(s) = maybe_summary_text {
+		// Generate summary and start new tapestry instance if context tokens would exceed maximum
+		// amount of allowed tokens.
+		//
+		// Either we are starting a new tapestry fragment with the summary and system message or we
+		// are continuing the current tapestry fragment.
+		let (mut tapestry_fragment_to_persist, was_summary_generated) = if max_tokens_limit <=
+			current_tapestry_fragment.context_tokens.saturating_add(&msgs_tokens)
+		{
+			let summary =
+				Self::generate_summary(summary_model_config, &current_tapestry_fragment).await?;
 			let summary_ctx_msg = Self::build_context_message(
-				WrapperRole::from(SYSTEM_ROLE.to_string()),
-				format!("\n\"\"\"\n {}", s),
+				SYSTEM_ROLE.into(),
+				format!("\n\"\"\"\n {}", summary),
 				None,
 			);
 
@@ -356,38 +353,26 @@ pub trait Loom<T: Config> {
 			// keep system and summary messages
 			req_msgs.truncate(2);
 
-			TapestryFragment {
-				context_tokens: T::PromptModel::count_tokens(s)?,
-				context_messages: Vec::from([system_ctx_msg, summary_ctx_msg]),
-			}
+			let mut new_tapestry_fragment = TapestryFragment {
+				context_messages: vec![system_ctx_msg, summary_ctx_msg],
+				..Default::default()
+			};
+
+			new_tapestry_fragment.context_tokens =
+				Self::count_tokens_in_messages(new_tapestry_fragment.context_messages.iter());
+
+			(new_tapestry_fragment, true)
 		} else {
-			tapestry_fragment
+			(current_tapestry_fragment, false)
 		};
 
 		let max_tokens = max_tokens_limit
 			.saturating_sub(&tapestry_fragment_to_persist.context_tokens)
 			.saturating_sub(&msgs_tokens);
 
-		req_msgs.extend(
-			prompt_config.model.ctx_msgs_to_prompt_requests(
-				&[
-					msgs.as_slice(),
-					&[Self::build_context_message(
-						WrapperRole::from(SYSTEM_ROLE.to_string()),
-						format!(
-							"Respond with {} tokens or less",
-							prompt_config.model.convert_tokens_to_words(max_tokens)
-						),
-						None,
-					)],
-				]
-				.concat(),
-			),
-		);
-
 		let response = prompt_config
 			.model
-			.prompt(req_msgs.into(), &prompt_config.params, max_tokens)
+			.prompt(req_msgs.tokens, req_msgs.to_vec(), &prompt_config.params, max_tokens)
 			.await
 			.map_err(|e| {
 				error!("Failed to prompt LLM: {}", e);
@@ -397,7 +382,7 @@ pub trait Loom<T: Config> {
 		if let Err(e) = tapestry_fragment_to_persist.extend_messages(
 			msgs.into_iter()
 				.chain(vec![Self::build_context_message(
-					WrapperRole::from(ASSISTANT_ROLE.to_string()),
+					ASSISTANT_ROLE.into(),
 					response.clone().into().unwrap_or_default(),
 					None,
 				)])
@@ -413,7 +398,7 @@ pub trait Loom<T: Config> {
 		T::Chest::save_tapestry_fragment(
 			tapestry_id,
 			tapestry_fragment_to_persist,
-			is_summary_generated,
+			was_summary_generated,
 		)
 		.await
 		.map_err(|e| {
@@ -434,15 +419,14 @@ pub trait Loom<T: Config> {
 		summary_model_config: LlmConfig<T, T::SummaryModel>,
 		tapestry_fragment: &TapestryFragment<T>,
 	) -> Result<String> {
-		let mut summary_generation_prompt = summary_model_config
-			.model
-			.ctx_msgs_to_prompt_requests(&tapestry_fragment.context_messages);
-
 		let summary_model_tokens =
 			T::convert_prompt_tokens_to_summary_model_tokens(tapestry_fragment.context_tokens);
 
+		let mut summary_generation_prompt =
+			VecPromptMsgsDeque::<T, T::SummaryModel>::new(summary_model_tokens);
+
 		let gen_summary_prompt = Self::build_context_message(
-			WrapperRole::from(SYSTEM_ROLE.to_string()),
+			SYSTEM_ROLE.into(),
 			format!(
 				"Generate a summary of the entire adventure so far. Respond with {} words or less",
 				summary_model_config.model.convert_tokens_to_words(summary_model_tokens)
@@ -461,7 +445,8 @@ pub trait Loom<T: Config> {
 		let res = summary_model_config
 			.model
 			.prompt(
-				summary_generation_prompt,
+				summary_generation_prompt.tokens,
+				summary_generation_prompt.to_vec(),
 				&summary_model_config.params,
 				summary_model_config.model.get_max_token_limit(),
 			)
@@ -488,5 +473,71 @@ pub trait Loom<T: Config> {
 			timestamp: chrono::Utc::now().to_rfc3339(),
 			_phantom: PhantomData,
 		}
+	}
+
+	fn count_tokens_in_messages(
+		msgs: impl Iterator<Item = &ContextMessage<T>>,
+	) -> <T::PromptModel as Llm<T>>::Tokens {
+		msgs.fold(<T::PromptModel as Llm<T>>::Tokens::from_u8(0).unwrap(), |acc, m| {
+			let tokens = T::PromptModel::count_tokens(m.content.clone()).unwrap_or_default();
+			acc.saturating_add(&tokens)
+		})
+	}
+}
+
+struct VecPromptMsgsDeque<T: Config, L: Llm<T>> {
+	tokens: <L as Llm<T>>::Tokens,
+	inner: VecDeque<<L as Llm<T>>::Request>,
+}
+
+impl<T: Config, L: Llm<T>> VecPromptMsgsDeque<T, L> {
+	fn new(tokens: L::Tokens) -> Self {
+		Self { tokens, inner: VecDeque::new() }
+	}
+
+	fn with_capacity(capacity: usize) -> Self {
+		Self { tokens: L::Tokens::from_u8(0).unwrap(), inner: VecDeque::with_capacity(capacity) }
+	}
+
+	fn push(&mut self, msg_reqs: L::Request) {
+		let tokens = L::count_tokens(msg_reqs.to_string()).unwrap_or_default();
+		self.tokens = self.tokens.saturating_add(&tokens);
+		self.inner.push_back(msg_reqs);
+	}
+
+	fn push_front(&mut self, msg_reqs: L::Request) {
+		let tokens = L::count_tokens(msg_reqs.to_string()).unwrap_or_default();
+		self.tokens = self.tokens.saturating_add(&tokens);
+		self.inner.push_front(msg_reqs);
+	}
+
+	fn append(&mut self, msg_reqs: &mut VecDeque<L::Request>) {
+		self.inner.append(msg_reqs);
+
+		for msg_req in msg_reqs {
+			let tokens = L::count_tokens(msg_req.to_string()).unwrap_or_default();
+			self.tokens = self.tokens.saturating_add(&tokens);
+		}
+	}
+
+	fn truncate(&mut self, len: usize) {
+		let mut tokens = L::Tokens::from_u8(0).unwrap();
+		for msg_req in self.inner.iter().take(len) {
+			let msg_tokens = L::count_tokens(msg_req.to_string()).unwrap_or_default();
+			tokens = tokens.saturating_add(&msg_tokens);
+		}
+		self.inner.truncate(len);
+	}
+
+	fn extend(&mut self, msg_reqs: Vec<L::Request>) {
+		for msg_req in &msg_reqs {
+			let tokens = L::count_tokens(msg_req.to_string()).unwrap_or_default();
+			self.tokens = self.tokens.saturating_add(&tokens);
+		}
+		self.inner.extend(msg_reqs);
+	}
+
+	fn to_vec(self) -> Vec<L::Request> {
+		self.inner.into()
 	}
 }

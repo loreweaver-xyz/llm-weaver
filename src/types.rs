@@ -14,8 +14,8 @@ pub type F32 = f32;
 
 pub const SYSTEM_ROLE: &str = "system";
 pub const ASSISTANT_ROLE: &str = "assistant";
-const USER_ROLE: &str = "user";
-const FUNCTION_ROLE: &str = "function";
+pub const USER_ROLE: &str = "user";
+pub const FUNCTION_ROLE: &str = "function";
 
 /// Wrapped [`Role`] for custom implementations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,9 +29,9 @@ impl Default for WrapperRole {
 	}
 }
 
-impl From<String> for WrapperRole {
-	fn from(role: String) -> Self {
-		match role.as_str() {
+impl From<&str> for WrapperRole {
+	fn from(role: &str) -> Self {
+		match role {
 			SYSTEM_ROLE => Self::Role(Role::System),
 			ASSISTANT_ROLE => Self::Role(Role::Assistant),
 			USER_ROLE => Self::Role(Role::User),
