@@ -56,7 +56,7 @@ use std::{
 use async_trait::async_trait;
 pub use bounded_integer::BoundedU8;
 use num_traits::{
-	CheckedAdd, CheckedDiv, FromPrimitive, SaturatingAdd, SaturatingMul, SaturatingSub,
+	CheckedAdd, CheckedDiv, CheckedSub, FromPrimitive, SaturatingAdd, SaturatingMul, SaturatingSub,
 	ToPrimitive, Unsigned,
 };
 pub use redis::{RedisWrite, ToRedisArgs};
@@ -143,6 +143,7 @@ pub trait Llm<T: Config>:
 		+ FromPrimitive
 		+ ToPrimitive
 		+ CheckedAdd
+		+ CheckedSub
 		+ SaturatingAdd
 		+ SaturatingSub
 		+ SaturatingMul
@@ -325,7 +326,7 @@ pub trait Loom<T: Config> {
 			.unwrap_or_default();
 
 		// Get max token limit which cannot be exceeded in a tapestry fragment
-		let max_tokens_limit = prompt_config.model.get_max_token_limit();
+		let max_prompt_tokens_limit = prompt_config.model.get_max_token_limit();
 
 		// Request messages which will be sent as a whole to the LLM
 		let mut req_msgs = VecPromptMsgsDeque::<T, T::PromptModel>::with_capacity(
@@ -351,14 +352,21 @@ pub trait Loom<T: Config> {
 		// Either we are starting a new tapestry fragment with the instruction and summary messages
 		// or we are continuing the current tapestry fragment.
 		let msgs_tokens = Self::count_tokens_in_messages(msgs.iter());
-		let does_exceeding_max_token_limit = max_tokens_limit <=
+		let does_exceeding_max_token_limit = max_prompt_tokens_limit <=
 			current_tapestry_fragment.context_tokens.saturating_add(&msgs_tokens);
 
 		let (mut tapestry_fragment_to_persist, was_summary_generated) =
 			if does_exceeding_max_token_limit {
-				let summary =
-					Self::generate_summary(summary_model_config, &current_tapestry_fragment)
-						.await?;
+				let summary_max_tokens: PromptModelTokens<T> =
+					prompt_config.model.max_context_length() - max_prompt_tokens_limit;
+
+				let summary = Self::generate_summary(
+					summary_model_config,
+					&current_tapestry_fragment,
+					T::convert_prompt_tokens_to_summary_model_tokens(summary_max_tokens),
+				)
+				.await?;
+
 				let summary_ctx_msg = Self::build_context_message(
 					SYSTEM_ROLE.into(),
 					format!("\n\"\"\"\n {}", summary),
@@ -384,9 +392,9 @@ pub trait Loom<T: Config> {
 		req_msgs.extend(msgs.iter().map(|m| m.clone().into()).collect::<Vec<_>>());
 
 		// Tokens available for LLM response which would not exceed maximum token limit
-		let max_tokens = max_tokens_limit
+		let max_tokens = max_prompt_tokens_limit
 			.saturating_sub(&tapestry_fragment_to_persist.context_tokens)
-			.saturating_sub(&msgs_tokens);
+			.saturating_sub(&req_msgs.tokens);
 
 		// Execute prompt to LLM
 		let response = prompt_config
@@ -439,6 +447,7 @@ pub trait Loom<T: Config> {
 	async fn generate_summary(
 		summary_model_config: LlmConfig<T, T::SummaryModel>,
 		tapestry_fragment: &TapestryFragment<T>,
+		summary_max_tokens: SummaryModelTokens<T>,
 	) -> Result<String> {
 		let mut summary_generation_prompt = VecPromptMsgsDeque::<T, T::SummaryModel>::new();
 
@@ -455,7 +464,7 @@ pub trait Loom<T: Config> {
 				summary_generation_prompt.tokens,
 				summary_generation_prompt.into_vec(),
 				&summary_model_config.params,
-				summary_model_config.model.get_max_token_limit(),
+				summary_max_tokens,
 			)
 			.await
 			.map_err(|e| {
@@ -487,7 +496,13 @@ pub trait Loom<T: Config> {
 	) -> <T::PromptModel as Llm<T>>::Tokens {
 		msgs.fold(<T::PromptModel as Llm<T>>::Tokens::from_u8(0).unwrap(), |acc, m| {
 			let tokens = T::PromptModel::count_tokens(m.content.clone()).unwrap_or_default();
-			acc.saturating_add(&tokens)
+			match acc.checked_add(&tokens) {
+				Some(v) => v,
+				None => {
+					error!("Token overflow");
+					acc
+				},
+			}
 		})
 	}
 }
