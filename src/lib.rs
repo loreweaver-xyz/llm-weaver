@@ -69,6 +69,8 @@ pub mod storage;
 pub mod types;
 
 #[cfg(test)]
+mod mock;
+#[cfg(test)]
 mod tests;
 
 pub use storage::TapestryChestHandler;
@@ -240,6 +242,18 @@ pub struct ContextMessage<T: Config> {
 	pub timestamp: String,
 
 	_phantom: PhantomData<T>,
+}
+
+impl<T: Config> ContextMessage<T> {
+	/// Create a new `ContextMessage` instance.
+	pub fn new(
+		role: WrapperRole,
+		content: String,
+		account_id: Option<String>,
+		timestamp: String,
+	) -> Self {
+		Self { role, content, account_id, timestamp, _phantom: PhantomData }
+	}
 }
 
 /// Represents a single part of a conversation containing a list of messages along with other
@@ -552,7 +566,12 @@ impl<T: Config, L: Llm<T>> VecPromptMsgsDeque<T, L> {
 			tokens = tokens.saturating_add(&msg_tokens);
 		}
 		self.inner.extend(msg_reqs);
-		self.tokens = tokens;
+		match self.tokens.checked_add(&tokens) {
+			Some(v) => self.tokens = v,
+			None => {
+				error!("Token overflow");
+			},
+		}
 	}
 
 	fn into_vec(self) -> Vec<L::Request> {
