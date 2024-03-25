@@ -30,10 +30,10 @@ fn vec_prompt_msgs_deque_extend() {
 	let msg2 = TestLlmRequest::new(2, "World".to_string());
 	let requests = vec![msg1.clone(), msg2.clone()];
 
-	let msg1_token_count = <TestApp as Config>::PromptModel::count_tokens(msg1.msg.clone())
-		.expect("Token count failed");
-	let msg2_token_count = <TestApp as Config>::PromptModel::count_tokens(msg2.msg.clone())
-		.expect("Token count failed");
+	let msg1_token_count =
+		<TestApp as Config>::PromptModel::count_tokens(&msg1.msg).expect("Token count failed");
+	let msg2_token_count =
+		<TestApp as Config>::PromptModel::count_tokens(&msg2.msg).expect("Token count failed");
 
 	deque.extend(requests.clone());
 	assert_eq!(deque.tokens, msg1_token_count + msg2_token_count);
@@ -51,10 +51,10 @@ fn vec_prompt_msgs_deque_append() {
 	msgs.push_back(msg2.clone());
 	let mut vec_prompt_msgs_deque = VecPromptMsgsDeque::<TestApp, TestLlm>::new();
 
-	let msg1_token_count = <TestApp as Config>::PromptModel::count_tokens(msg1.msg.clone())
-		.expect("Token count failed");
-	let msg2_token_count = <TestApp as Config>::PromptModel::count_tokens(msg2.msg.clone())
-		.expect("Token count failed");
+	let msg1_token_count =
+		<TestApp as Config>::PromptModel::count_tokens(&msg1.msg).expect("Token count failed");
+	let msg2_token_count =
+		<TestApp as Config>::PromptModel::count_tokens(&msg2.msg).expect("Token count failed");
 
 	vec_prompt_msgs_deque.append(&mut msgs);
 	assert_eq!(vec_prompt_msgs_deque.tokens, msg1_token_count + msg2_token_count);
@@ -81,12 +81,25 @@ fn vec_prompt_msgs_deque_push_front() {
 	let mut deque = VecPromptMsgsDeque::<TestApp, TestLlm>::new();
 	let request = TestLlmRequest::new(1, "Hello".to_string());
 
-	let request_token_count = <TestApp as Config>::PromptModel::count_tokens(request.msg.clone())
-		.expect("Token count failed");
+	let request_token_count =
+		<TestApp as Config>::PromptModel::count_tokens(&request.msg).expect("Token count failed");
 
 	deque.push_front(request.clone());
 	assert_eq!(deque.tokens, request_token_count);
 	assert_eq!(deque.inner.front(), Some(&request));
+}
+
+#[test]
+fn vec_prompt_msgs_deque_push_back() {
+	let mut deque = VecPromptMsgsDeque::<TestApp, TestLlm>::new();
+	let request = TestLlmRequest::new(1, "Hello".to_string());
+
+	let request_token_count =
+		<TestApp as Config>::PromptModel::count_tokens(&request.msg).expect("Token count failed");
+
+	deque.push_back(request.clone());
+	assert_eq!(deque.tokens, request_token_count);
+	assert_eq!(deque.inner.back(), Some(&request));
 }
 
 #[test]
@@ -101,14 +114,14 @@ fn vec_prompt_msgs_deque_truncate() {
 
 	let total_token_count = requests
 		.iter()
-		.map(|r| <TestApp as Config>::PromptModel::count_tokens(r.msg.clone()).unwrap())
+		.map(|r| <TestApp as Config>::PromptModel::count_tokens(&r.msg).unwrap())
 		.sum::<u16>();
 
 	assert_eq!(deque.tokens, total_token_count);
 
 	deque.truncate(1);
-	let msg1_token_count = <TestApp as Config>::PromptModel::count_tokens(msg1.msg.clone())
-		.expect("Token count failed");
+	let msg1_token_count =
+		<TestApp as Config>::PromptModel::count_tokens(&msg1.msg).expect("Token count failed");
 	assert_eq!(deque.tokens, msg1_token_count);
 	assert_eq!(deque.inner.len(), 1);
 	assert_eq!(deque.inner.front(), Some(&msg1));

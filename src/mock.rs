@@ -96,7 +96,7 @@ impl Llm<TestApp> for TestLlm {
 	type Request = TestLlmRequest;
 	type Response = TestLlmResponse;
 
-	fn count_tokens(content: String) -> Result<Self::Tokens> {
+	fn count_tokens(content: &str) -> Result<Self::Tokens> {
 		let bpe = p50k_base().unwrap();
 		let tokens = bpe.encode_with_special_tokens(&content.to_string());
 
