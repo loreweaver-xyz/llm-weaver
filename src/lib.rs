@@ -170,6 +170,10 @@ pub trait Llm<T: Config>:
 	/// `&self`. For example, the model passed to [`Loom::weave`] can be represented as an enum with
 	/// a multitude of variants, each representing a different model.
 	fn name(&self) -> &'static str;
+	/// Alias for the model.
+	///
+	/// Can be used for any unforseen use cases where the model name is not sufficient.
+	fn alias(&self) -> &'static str;
 	/// Calculates the number of tokens in a string.
 	///
 	/// This may vary depending on the type of tokens used by the LLM. In the case of ChatGPT, can be calculated using the [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs#counting-token-length) crate.
@@ -188,7 +192,7 @@ pub trait Llm<T: Config>:
 	///
 	/// This is calculated by multiplying the maximum context length (tokens) for the current
 	/// [`Config::PromptModel`] by the [`Config::TOKEN_THRESHOLD_PERCENTILE`] and dividing by 100.
-	fn get_max_token_limit(&self) -> Self::Tokens {
+	fn get_max_prompt_token_limit(&self) -> Self::Tokens {
 		let max_context_length = self.max_context_length();
 		let token_threshold = Self::Tokens::from_u8(T::TOKEN_THRESHOLD_PERCENTILE.get()).unwrap();
 		let tokens = match max_context_length.checked_mul(&token_threshold) {
@@ -197,6 +201,10 @@ pub trait Llm<T: Config>:
 		};
 
 		tokens.checked_div(&Self::Tokens::from_u8(100).unwrap()).unwrap()
+	}
+	/// Get optional max completion token limit.
+	fn get_max_completion_token_limit(&self) -> Option<Self::Tokens> {
+		None
 	}
 	/// [`ContextMessage`]s to [`Llm::Request`] conversion.
 	fn ctx_msgs_to_prompt_requests(&self, msgs: &[ContextMessage<T>]) -> Vec<Self::Request> {
@@ -369,7 +377,7 @@ pub trait Loom<T: Config> {
 			.unwrap_or_default();
 
 		// Get max token limit which cannot be exceeded in a tapestry fragment
-		let max_prompt_tokens_limit = prompt_llm_config.model.get_max_token_limit();
+		let max_prompt_tokens_limit = prompt_llm_config.model.get_max_prompt_token_limit();
 
 		// Request messages which will be sent as a whole to the LLM
 		let mut req_msgs = VecPromptMsgsDeque::<T, T::PromptModel>::with_capacity(
@@ -437,17 +445,9 @@ pub trait Loom<T: Config> {
 		req_msgs.extend(msgs.iter().map(|m| m.clone().into()).collect::<Vec<_>>());
 
 		// Tokens available for LLM response which would not exceed maximum token limit
-		let max_tokens = max_prompt_tokens_limit
+		let max_completion_tokens = max_prompt_tokens_limit
 			.saturating_sub(&tapestry_fragment_to_persist.context_tokens)
 			.saturating_sub(&req_msgs.tokens);
-
-		println!("max_tokens: {}", max_tokens);
-		println!("max_prompt_tokens_limit: {}", max_prompt_tokens_limit);
-		println!(
-			"tapestry_fragment_to_persist.context_tokens: {}",
-			tapestry_fragment_to_persist.context_tokens
-		);
-		println!("req_msgs.tokens: {}", req_msgs.tokens);
 
 		// Execute prompt to LLM
 		let response = prompt_llm_config
@@ -457,7 +457,7 @@ pub trait Loom<T: Config> {
 				req_msgs.tokens,
 				req_msgs.into_vec(),
 				&prompt_llm_config.params,
-				max_tokens,
+				max_completion_tokens,
 			)
 			.await
 			.map_err(|e| {
