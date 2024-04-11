@@ -296,9 +296,9 @@ impl<T: Config> TapestryFragment<T> {
 	fn push_message(&mut self, msg: ContextMessage<T>) -> Result<()> {
 		let tokens = T::PromptModel::count_tokens(&msg.content)?;
 		let new_token_count = self.context_tokens.checked_add(&tokens).ok_or_else(|| {
-			LoomError::from(WeaveError::BadConfig(format!(
-				"Number of tokens exceeds max tokens for model"
-			)))
+			LoomError::from(WeaveError::BadConfig(
+				"Number of tokens exceeds max tokens for model".to_string(),
+			))
 		})?;
 
 		self.context_tokens = new_token_count;
@@ -312,7 +312,7 @@ impl<T: Config> TapestryFragment<T> {
 	fn extend_messages(&mut self, msgs: Vec<ContextMessage<T>>) -> Result<()> {
 		let total_new_tokens = msgs
 			.iter()
-			.map(|m| T::PromptModel::count_tokens(&m.content).unwrap().clone())
+			.map(|m| T::PromptModel::count_tokens(&m.content).unwrap())
 			.collect::<Vec<_>>();
 
 		let sum: PromptModelTokens<T> = total_new_tokens
@@ -321,9 +321,9 @@ impl<T: Config> TapestryFragment<T> {
 
 		// Check the total token count before proceeding
 		let new_token_count = self.context_tokens.checked_add(&sum).ok_or_else(|| {
-			LoomError::from(WeaveError::BadConfig(format!(
-				"Number of tokens exceeds max tokens for model"
-			)))
+			LoomError::from(WeaveError::BadConfig(
+				"Number of tokens exceeds max tokens for model".to_string(),
+			))
 		})?;
 
 		// Update the token count and messages only if all checks pass
