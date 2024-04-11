@@ -113,6 +113,10 @@ impl Llm<TestApp> for TestLlm {
 		"TestLlm"
 	}
 
+	fn alias(&self) -> &'static str {
+		"TestLlm"
+	}
+
 	async fn prompt(
 		&self,
 		_is_summarize: bool,
