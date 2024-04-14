@@ -73,6 +73,8 @@ impl TapestryId for TestTapestryId {
 pub struct TestApp;
 impl Config for TestApp {
 	const TOKEN_THRESHOLD_PERCENTILE: BoundedU8<0, 100> = BoundedU8::new(70).unwrap();
+	const MINIMUM_RESPONSE_LENGTH: u64 = 300;
+
 	type PromptModel = TestLlm;
 	type SummaryModel = TestLlm;
 	type Chest = TestChest;

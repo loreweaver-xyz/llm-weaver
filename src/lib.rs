@@ -227,6 +227,11 @@ pub trait Config: Debug + Sized + Clone + Default + Send + Sync + 'static {
 	///
 	/// Defaults to `85%`
 	const TOKEN_THRESHOLD_PERCENTILE: BoundedU8<0, 100> = BoundedU8::new(85).unwrap();
+	/// Ensures that the maximum completion tokens is at least the minimum response length.
+	///
+	/// If the maximum completion tokens is less than the minimum response length, a summary
+	/// will be generated and a new tapestry fragment will be created.
+	const MINIMUM_RESPONSE_LENGTH: u64;
 
 	/// The LLM to use for generating responses to prompts.
 	type PromptModel: Llm<Self>;
@@ -396,7 +401,7 @@ pub trait Loom<T: Config> {
 		);
 		req_msgs.append(&mut ctx_msgs);
 
-		// New messages are not added here yet since we first calculate if the new messages would
+		// New messages are not added here yet since we first calculate if the new `msgs` would
 		// have the tapestry fragment exceed the maximum token limit and require a summary
 		// generation resulting in a new tapestry fragment.
 		//
@@ -404,7 +409,9 @@ pub trait Loom<T: Config> {
 		// or we are continuing the current tapestry fragment.
 		let msgs_tokens = Self::count_tokens_in_messages(msgs.iter());
 		let does_exceeding_max_token_limit = max_prompt_tokens_limit <=
-			current_tapestry_fragment.context_tokens.saturating_add(&msgs_tokens);
+			req_msgs.tokens.saturating_add(&msgs_tokens).saturating_add(
+				&PromptModelTokens::<T>::from_u64(T::MINIMUM_RESPONSE_LENGTH).unwrap(),
+			);
 
 		let (mut tapestry_fragment_to_persist, was_summary_generated) =
 			if does_exceeding_max_token_limit {
@@ -445,9 +452,7 @@ pub trait Loom<T: Config> {
 		req_msgs.extend(msgs.iter().map(|m| m.clone().into()).collect::<Vec<_>>());
 
 		// Tokens available for LLM response which would not exceed maximum token limit
-		let max_completion_tokens = max_prompt_tokens_limit
-			.saturating_sub(&tapestry_fragment_to_persist.context_tokens)
-			.saturating_sub(&req_msgs.tokens);
+		let max_completion_tokens = max_prompt_tokens_limit.saturating_sub(&req_msgs.tokens);
 
 		// Execute prompt to LLM
 		let response = prompt_llm_config
@@ -509,6 +514,8 @@ pub trait Loom<T: Config> {
 				.model
 				.ctx_msgs_to_prompt_requests(tapestry_fragment.context_messages.as_slice()),
 		);
+
+		println!("prompting summary model");
 
 		let res = summary_model_config
 			.model

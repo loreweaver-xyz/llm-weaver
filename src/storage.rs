@@ -106,17 +106,16 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		let mut con = client.get_connection()?;
 		let base_key = &tapestry_id.base_key();
 
-		let tapestry_instance = verify_and_get_instance(&mut con, base_key, None).await?;
+		let mut tapestry_instance =
+			verify_and_get_instance(&mut con, base_key, None).await?.unwrap_or(0);
 
 		redis::transaction(&mut con, &[base_key], |con, pipe| {
-			let mut tapestry_instance = match tapestry_instance {
-				Some(instance) => instance,
-				None => {
-					pipe.hset(base_key, INSTANCE_COUNT, 1).ignore();
-					debug!("Saved \"instance_count\" member to {} key", base_key);
+			// If the tapestry does not exist (i.e. instance is at 0), then set it to 1
+			if tapestry_instance == 0 {
+				pipe.hset(base_key, INSTANCE_COUNT, 1).ignore();
+				debug!("Saved \"instance_count\" member to {} key", base_key);
 
-					1
-				},
+				tapestry_instance = 1
 			};
 
 			if increment {
@@ -149,7 +148,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 			LoomError::from(StorageError::Redis(e))
 		})?;
 
-		Ok(tapestry_instance.unwrap_or(1))
+		Ok(tapestry_instance)
 	}
 
 	async fn save_tapestry_metadata<
