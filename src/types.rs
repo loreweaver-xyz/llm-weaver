@@ -1,5 +1,3 @@
-use std::fmt::Display;
-
 use async_openai::types::Role;
 use serde::{Deserialize, Serialize};
 
@@ -58,46 +56,37 @@ impl From<WrapperRole> for String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoomError {
+	#[error("Weave error: {0}")]
 	Weave(#[from] WeaveError),
+	#[error("Storage error: {0}")]
 	Storage(#[from] StorageError),
+	#[error("Error: {0}")]
+	Error(String),
 }
 
-impl Display for LoomError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::Weave(e) => write!(f, "{}", e),
-			Self::Storage(e) => write!(f, "{}", e),
+impl From<Box<dyn std::error::Error + Send + Sync>> for LoomError {
+	fn from(error: Box<dyn std::error::Error + Send + Sync>) -> Self {
+		match error.downcast::<LoomError>() {
+			Ok(loom_error) => *loom_error,
+			Err(error) => LoomError::Error(error.to_string()),
 		}
 	}
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum WeaveError {
-	/// Bad configuration
+	#[error("Exceeds max prompt tokens")]
+	MaxCompletionTokensIsZero,
+	#[error("Bad configuration: {0}")]
 	BadConfig(String),
-}
-
-impl Display for WeaveError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::BadConfig(msg) => write!(f, "Bad configuration: {}", msg),
-		}
-	}
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
+	#[error("Redis error: {0}")]
 	Redis(redis::RedisError),
+	#[error("Parsing error")]
 	Parsing,
+	#[error("Not found")]
 	NotFound,
-}
-
-impl Display for StorageError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			StorageError::Redis(e) => write!(f, "Redis error: {}", e),
-			StorageError::Parsing => write!(f, "Parsing error"),
-			StorageError::NotFound => write!(f, "Not found"),
-		}
-	}
 }

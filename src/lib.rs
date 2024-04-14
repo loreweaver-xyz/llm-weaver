@@ -73,6 +73,7 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+use num_traits::Zero;
 pub use storage::TapestryChestHandler;
 use types::{LoomError, SummaryModelTokens, WeaveError, ASSISTANT_ROLE, SYSTEM_ROLE};
 
@@ -408,6 +409,9 @@ pub trait Loom<T: Config> {
 		// Either we are starting a new tapestry fragment with the instruction and summary messages
 		// or we are continuing the current tapestry fragment.
 		let msgs_tokens = Self::count_tokens_in_messages(msgs.iter());
+
+		// Check if the total number of tokens in the tapestry fragment exceeds the maximum number
+		// of tokens allowed after adding the new messages and the minimum response length.
 		let does_exceeding_max_token_limit = max_prompt_tokens_limit <=
 			req_msgs.tokens.saturating_add(&msgs_tokens).saturating_add(
 				&PromptModelTokens::<T>::from_u64(T::MINIMUM_RESPONSE_LENGTH).unwrap(),
@@ -453,6 +457,10 @@ pub trait Loom<T: Config> {
 
 		// Tokens available for LLM response which would not exceed maximum token limit
 		let max_completion_tokens = max_prompt_tokens_limit.saturating_sub(&req_msgs.tokens);
+
+		if max_completion_tokens.is_zero() {
+			return Err(LoomError::from(WeaveError::MaxCompletionTokensIsZero).into());
+		}
 
 		// Execute prompt to LLM
 		let response = prompt_llm_config
