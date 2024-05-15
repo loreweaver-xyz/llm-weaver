@@ -523,8 +523,6 @@ pub trait Loom<T: Config> {
 				.ctx_msgs_to_prompt_requests(tapestry_fragment.context_messages.as_slice()),
 		);
 
-		println!("prompting summary model");
-
 		let res = summary_model_config
 			.model
 			.prompt(

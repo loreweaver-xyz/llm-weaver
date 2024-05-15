@@ -159,7 +159,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		metadata: M,
 	) -> crate::Result<()> {
 		let client = get_client().await.expect("Failed to get redis client");
-		let mut con = client.get_async_connection().await?;
+		let mut con = client.get_multiplexed_async_connection().await?;
 		debug!("Connected to Redis");
 
 		let key: &String = &tapestry_id.base_key();
@@ -176,7 +176,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 
 	async fn get_tapestry<TID: TapestryId>(tapestry_id: TID) -> crate::Result<Option<u16>> {
 		let client = get_client().await.expect("Failed to get redis client");
-		let mut con = client.get_async_connection().await?;
+		let mut con = client.get_multiplexed_async_connection().await?;
 
 		let base_key = &tapestry_id.base_key();
 
@@ -248,7 +248,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 		tapestry_id: TID,
 	) -> crate::Result<Option<M>> {
 		let client = get_client().await.expect("Failed to get redis client");
-		let mut con = client.get_async_connection().await?;
+		let mut con = client.get_multiplexed_async_connection().await?;
 		debug!("Connected to Redis");
 
 		let key = &tapestry_id.base_key();
@@ -268,7 +268,7 @@ impl<T: Config> TapestryChestHandler<T> for TapestryChest {
 
 	async fn delete_tapestry<TID: TapestryId>(tapestry_id: TID) -> crate::Result<()> {
 		let client = get_client().await.expect("Failed to get redis client");
-		let mut con = client.get_async_connection().await?;
+		let mut con = client.get_multiplexed_async_connection().await?;
 
 		let tapestry_id = &tapestry_id.base_key();
 
