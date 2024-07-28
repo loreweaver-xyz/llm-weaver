@@ -141,8 +141,15 @@ impl Llm<TestApp> for TestLlm {
 	fn ctx_msgs_to_prompt_requests(&self, msgs: &[ContextMessage<TestApp>]) -> Vec<Self::Request> {
 		msgs.iter().map(|msg| TestLlmRequest::from(msg.clone())).collect()
 	}
-}
 
+	fn compute_cost(
+		&self,
+		prompt_tokens: Self::Tokens,
+		response_tokens: Self::Tokens,
+	) -> Self::Tokens {
+		prompt_tokens + response_tokens
+	}
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestLlmRequest {
 	pub id: u32,

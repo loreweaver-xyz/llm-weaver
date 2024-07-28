@@ -188,6 +188,12 @@ pub trait Llm<T: Config>:
 		params: &Self::Parameters,
 		max_tokens: Self::Tokens,
 	) -> Result<Self::Response>;
+	/// Compute cost of a message based on model.
+	fn compute_cost(
+		&self,
+		prompt_tokens: Self::Tokens,
+		response_tokens: Self::Tokens,
+	) -> Self::Tokens;
 	/// Calculate the upperbound of tokens allowed for the current [`Config::PromptModel`] before a
 	/// summary is generated.
 	///
