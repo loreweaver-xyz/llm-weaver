@@ -62,7 +62,7 @@ use num_traits::{
 pub use redis::{RedisWrite, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use storage::TapestryChest;
-use tracing::{debug, error, instrument};
+use tracing::{debug, error, instrument, trace};
 
 pub mod architecture;
 pub mod storage;
@@ -313,6 +313,8 @@ impl<T: Config> TapestryFragment<T> {
 			))
 		})?;
 
+		trace!("Pushing message: {:?}, new token count: {}", msg, new_token_count);
+
 		self.context_tokens = new_token_count;
 		self.context_messages.push(msg);
 		Ok(())
@@ -331,7 +333,8 @@ impl<T: Config> TapestryFragment<T> {
 			.iter()
 			.fold(PromptModelTokens::<T>::default(), |acc, x| acc.saturating_add(x));
 
-		// Check the total token count before proceeding
+		trace!("Extending messages with token sum: {}", sum);
+
 		let new_token_count = self.context_tokens.checked_add(&sum).ok_or_else(|| {
 			LoomError::from(WeaveError::BadConfig(
 				"Number of tokens exceeds max tokens for model".to_string(),
@@ -341,7 +344,7 @@ impl<T: Config> TapestryFragment<T> {
 		// Update the token count and messages only if all checks pass
 		self.context_tokens = new_token_count;
 		for m in msgs {
-			self.context_messages.push(m); // Push the message directly without cloning
+			self.context_messages.push(m);
 		}
 
 		Ok(())
@@ -383,7 +386,8 @@ pub trait Loom<T: Config> {
 			Self::build_context_message(SYSTEM_ROLE.into(), instructions, None);
 		let instructions_req_msg: PromptModelRequest<T> = instructions_ctx_msg.clone().into();
 
-		// Get current tapestry fragment to work with
+		trace!("Fetching current tapestry fragment for ID: {:?}", tapestry_id);
+
 		let current_tapestry_fragment = T::Chest::get_tapestry_fragment(tapestry_id.clone(), None)
 			.await?
 			.unwrap_or_default();
@@ -393,8 +397,7 @@ pub trait Loom<T: Config> {
 
 		// Request messages which will be sent as a whole to the LLM
 		let mut req_msgs = VecPromptMsgsDeque::<T, T::PromptModel>::with_capacity(
-			current_tapestry_fragment.context_messages.len() + 1, /* +1 for the instruction
-			                                                       * message to add */
+			current_tapestry_fragment.context_messages.len() + 1,
 		);
 
 		// Add instructions as the first message
@@ -416,6 +419,12 @@ pub trait Loom<T: Config> {
 		// or we are continuing the current tapestry fragment.
 		let msgs_tokens = Self::count_tokens_in_messages(msgs.iter());
 
+		trace!(
+			"Total tokens after adding new messages: {:?}, maximum allowed: {:?}",
+			req_msgs.tokens.saturating_add(&msgs_tokens),
+			max_prompt_tokens_limit
+		);
+
 		// Check if the total number of tokens in the tapestry fragment exceeds the maximum number
 		// of tokens allowed after adding the new messages and the minimum response length.
 		let does_exceeding_max_token_limit = max_prompt_tokens_limit <=
@@ -425,12 +434,13 @@ pub trait Loom<T: Config> {
 
 		let (mut tapestry_fragment_to_persist, was_summary_generated) =
 			if does_exceeding_max_token_limit {
+				trace!("Generating summary as the token limit exceeded");
+
 				// Summary generation should not exceed the maximum token limit of the prompt model
 				// since it will be added to the tapestry fragment
 				let summary_max_tokens: PromptModelTokens<T> =
 					prompt_llm_config.model.max_context_length() - max_prompt_tokens_limit;
 
-				// Generate summary
 				let summary = Self::generate_summary(
 					summary_llm_config,
 					&current_tapestry_fragment,
@@ -464,11 +474,14 @@ pub trait Loom<T: Config> {
 		// Tokens available for LLM response which would not exceed maximum token limit
 		let max_completion_tokens = max_prompt_tokens_limit.saturating_sub(&req_msgs.tokens);
 
+		trace!("Max completion tokens available: {:?}", max_completion_tokens);
+
 		if max_completion_tokens.is_zero() {
 			return Err(LoomError::from(WeaveError::MaxCompletionTokensIsZero).into());
 		}
 
-		// Execute prompt to LLM
+		trace!("Prompting LLM with request messages");
+
 		let response = prompt_llm_config
 			.model
 			.prompt(
@@ -521,6 +534,12 @@ pub trait Loom<T: Config> {
 		tapestry_fragment: &TapestryFragment<T>,
 		summary_max_tokens: SummaryModelTokens<T>,
 	) -> Result<String> {
+		trace!(
+			"Generating summary with max tokens: {:?}, for tapestry fragment: {:?}",
+			summary_max_tokens,
+			tapestry_fragment
+		);
+
 		let mut summary_generation_prompt = VecPromptMsgsDeque::<T, T::SummaryModel>::new();
 
 		summary_generation_prompt.extend(
@@ -546,6 +565,8 @@ pub trait Loom<T: Config> {
 
 		let summary_response_content = res.into();
 
+		trace!("Generated summary: {:?}", summary_response_content);
+
 		Ok(summary_response_content.unwrap_or_default())
 	}
 
@@ -555,6 +576,8 @@ pub trait Loom<T: Config> {
 		content: String,
 		account_id: Option<String>,
 	) -> ContextMessage<T> {
+		trace!("Building context message for role: {:?}, content: {}", role, content);
+
 		ContextMessage {
 			role,
 			content,
