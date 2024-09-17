@@ -142,12 +142,8 @@ impl Llm<TestApp> for TestLlm {
 		msgs.iter().map(|msg| TestLlmRequest::from(msg.clone())).collect()
 	}
 
-	fn compute_cost(
-		&self,
-		prompt_tokens: Self::Tokens,
-		response_tokens: Self::Tokens,
-	) -> Self::Tokens {
-		prompt_tokens + response_tokens
+	fn compute_cost(&self, prompt_tokens: Self::Tokens, response_tokens: Self::Tokens) -> f64 {
+		(prompt_tokens + response_tokens) as f64
 	}
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
