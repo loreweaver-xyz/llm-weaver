@@ -189,11 +189,7 @@ pub trait Llm<T: Config>:
 		max_tokens: Self::Tokens,
 	) -> Result<Self::Response>;
 	/// Compute cost of a message based on model.
-	fn compute_cost(
-		&self,
-		prompt_tokens: Self::Tokens,
-		response_tokens: Self::Tokens,
-	) -> Self::Tokens;
+	fn compute_cost(&self, prompt_tokens: Self::Tokens, response_tokens: Self::Tokens) -> f64;
 	/// Calculate the upperbound of tokens allowed for the current [`Config::PromptModel`] before a
 	/// summary is generated.
 	///
@@ -374,7 +370,7 @@ pub trait Loom<T: Config> {
 	/// - `instructions`: The instruction message to be used for the current [`TapestryFragment`]
 	///   instance.
 	/// - `msgs`: The messages to prompt the LLM with.
-	#[instrument]
+	#[instrument(skip(instructions, msgs))]
 	async fn weave<TID: TapestryId>(
 		prompt_llm_config: LlmConfig<T, T::PromptModel>,
 		summary_llm_config: LlmConfig<T, T::SummaryModel>,
