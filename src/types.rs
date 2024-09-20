@@ -83,8 +83,12 @@ pub enum WeaveError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
+	#[cfg(feature = "redis")]
 	#[error("Redis error: {0}")]
 	Redis(redis::RedisError),
+	#[cfg(feature = "rocksdb")]
+	#[error("RocksDb error: {0}")]
+	RocksDb(rocksdb::Error),
 	#[error("Parsing error")]
 	Parsing,
 	#[error("Not found")]
