@@ -25,11 +25,6 @@ tokio = { version = "1.32.0", features = ["full"] }
 tracing = "0.1.37"
 serde_json = "1.0.107"
 serde = { version = "1.0.188", features = ["derive"] }
-redis = { version = "0.25.0", features = [
-    "tokio-comp",
-    "tokio-rustls-comp",
-    "json",
-], optional = true }
 rocksdb = { version = "0.22.0", features = [
     "multi-threaded-cf",
 ], optional = true }
@@ -42,5 +37,4 @@ aquamarine = "0.3.2"
 tiktoken-rs = "0.5.8"
 
 [features]
-redis = ["dep:redis"]
 rocksdb = ["dep:rocksdb"]

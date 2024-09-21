@@ -61,7 +61,7 @@ use num_traits::{
 	SaturatingSub, ToPrimitive, Unsigned,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tracing::{debug, error, instrument, trace};
+use tracing::{error, trace};
 
 pub mod architecture;
 pub mod loom;
@@ -73,11 +73,10 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-use num_traits::Zero;
 pub use storage::TapestryChestHandler;
-use types::{LoomError, SummaryModelTokens, WeaveError, ASSISTANT_ROLE, SYSTEM_ROLE};
+use types::{LoomError, SummaryModelTokens, WeaveError};
 
-use crate::types::{PromptModelRequest, PromptModelTokens, WrapperRole};
+use crate::types::{PromptModelTokens, WrapperRole};
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 

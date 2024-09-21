@@ -1,12 +1,9 @@
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::{Debug, Display};
 
 use crate::{Config, TapestryFragment, TapestryId};
 
-pub(crate) mod common;
-#[cfg(feature = "redis")]
-pub mod redis;
 #[cfg(feature = "rocksdb")]
 pub mod rocksdb;
 
@@ -48,7 +45,7 @@ pub trait TapestryChestHandler<T: Config> {
 	/// Save tapestry metadata.
 	///
 	/// Based on application use cases, you can add aditional data for a given [`TapestryId`]
-	async fn save_tapestry_metadata<TID: TapestryId, M: ToString + Debug + Clone + Send + Sync>(
+	async fn save_tapestry_metadata<TID: TapestryId, M: Serialize + Debug + Clone + Send + Sync>(
 		&self,
 		tapestry_id: TID,
 		metadata: M,
@@ -75,7 +72,7 @@ pub trait TapestryChestHandler<T: Config> {
 		instance: Option<u64>,
 	) -> crate::Result<Option<TapestryFragment<T>>>;
 	/// Retrieves the last tapestry metadata, or a metadata at a specified instance.
-	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
+	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Send + Sync>(
 		&self,
 		tapestry_id: TID,
 	) -> crate::Result<Option<M>>;
