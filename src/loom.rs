@@ -5,11 +5,10 @@ use tracing::{debug, error, instrument, trace};
 
 use crate::{
 	types::{
-		LoomError, PromptModelRequest, PromptModelTokens, SummaryModelTokens, WeaveError,
-		WrapperRole, ASSISTANT_ROLE, SYSTEM_ROLE,
+		LoomError, PromptModelRequest, PromptModelTokens, SummaryModelTokens, VecPromptMsgsDeque,
+		WeaveError, WrapperRole, ASSISTANT_ROLE, SYSTEM_ROLE,
 	},
 	Config, ContextMessage, Llm, LlmConfig, TapestryChestHandler, TapestryFragment, TapestryId,
-	VecPromptMsgsDeque,
 };
 
 /// The machine that drives all of the core methods that should be used across any service
@@ -17,7 +16,7 @@ use crate::{
 ///
 /// This is implemented over the [`Config`] trait.
 pub struct Loom<T: Config> {
-	chest: T::Chest,
+	pub chest: T::Chest,
 	_phantom: PhantomData<T>,
 }
 
@@ -28,6 +27,22 @@ impl<T: Config> Loom<T> {
 	}
 
 	/// Prompt LLM Weaver for a response for [`TapestryId`].
+	///
+	/// Prompts LLM with the current [`TapestryFragment`] instance and the new `msgs`.
+	///
+	/// A summary will be generated of the current [`TapestryFragment`] instance if the total number
+	/// of tokens in the `context_messages` exceeds the maximum number of tokens allowed for the
+	/// current [`Config::PromptModel`] or custom max tokens. This threshold is affected by the
+	/// [`Config::TOKEN_THRESHOLD_PERCENTILE`].
+	///
+	/// # Parameters
+	///
+	/// - `prompt_llm_config`: The [`Config::PromptModel`] to use for prompting LLM.
+	/// - `summary_llm_config`: The [`Config::SummaryModel`] to use for generating summaries.
+	/// - `tapestry_id`: The [`TapestryId`] to use for storing the [`TapestryFragment`] instance.
+	/// - `instructions`: The instruction message to be used for the current [`TapestryFragment`]
+	///   instance.
+	/// - `msgs`: The messages to prompt the LLM with.
 	#[instrument(skip(self, instructions, msgs))]
 	pub async fn weave<TID: TapestryId>(
 		&self,

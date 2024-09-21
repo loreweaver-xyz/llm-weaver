@@ -1,5 +1,9 @@
+use std::collections::VecDeque;
+
 use async_openai::types::Role;
+use num_traits::{CheckedAdd, FromPrimitive, SaturatingAdd};
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 use crate::{Config, Llm};
 
@@ -16,7 +20,7 @@ pub const USER_ROLE: &str = "user";
 pub const FUNCTION_ROLE: &str = "function";
 
 /// Wrapped [`Role`] for custom implementations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum WrapperRole {
 	Role(Role),
 }
@@ -92,6 +96,78 @@ pub enum StorageError {
 	NotFound,
 	#[error("Failed to read instance count")]
 	FailedToReadInstanceCount,
+	#[error("Database error: {0}")]
+	DatabaseError(String),
+	#[error("Serialization error: {0}")]
+	SerializationError(String),
+	#[error("Deserialization error: {0}")]
+	DeserializationError(String),
 	#[error("Internal error: {0}")]
 	InternalError(String),
+}
+
+/// A helper struct to manage the prompt messages in a deque while keeping track of the tokens
+/// added or removed.
+pub struct VecPromptMsgsDeque<T: Config, L: Llm<T>> {
+	pub tokens: <L as Llm<T>>::Tokens,
+	pub inner: VecDeque<<L as Llm<T>>::Request>,
+}
+
+impl<T: Config, L: Llm<T>> VecPromptMsgsDeque<T, L> {
+	pub fn new() -> Self {
+		Self { tokens: L::Tokens::from_u8(0).unwrap(), inner: VecDeque::new() }
+	}
+
+	pub fn with_capacity(capacity: usize) -> Self {
+		Self { tokens: L::Tokens::from_u8(0).unwrap(), inner: VecDeque::with_capacity(capacity) }
+	}
+
+	pub fn push_front(&mut self, msg_reqs: L::Request) {
+		let tokens = L::count_tokens(&msg_reqs.to_string()).unwrap_or_default();
+		self.tokens = self.tokens.saturating_add(&tokens);
+		self.inner.push_front(msg_reqs);
+	}
+
+	pub fn push_back(&mut self, msg_reqs: L::Request) {
+		let tokens = L::count_tokens(&msg_reqs.to_string()).unwrap_or_default();
+		self.tokens = self.tokens.saturating_add(&tokens);
+		self.inner.push_back(msg_reqs);
+	}
+
+	pub fn append(&mut self, msg_reqs: &mut VecDeque<L::Request>) {
+		msg_reqs.iter().for_each(|msg_req| {
+			let msg_tokens = L::count_tokens(&msg_req.to_string()).unwrap_or_default();
+			self.tokens = self.tokens.saturating_add(&msg_tokens);
+		});
+		self.inner.append(msg_reqs);
+	}
+
+	pub fn truncate(&mut self, len: usize) {
+		let mut tokens = L::Tokens::from_u8(0).unwrap();
+		for msg_req in self.inner.iter().take(len) {
+			let msg_tokens = L::count_tokens(&msg_req.to_string()).unwrap_or_default();
+			tokens = tokens.saturating_add(&msg_tokens);
+		}
+		self.inner.truncate(len);
+		self.tokens = tokens;
+	}
+
+	pub fn extend(&mut self, msg_reqs: Vec<L::Request>) {
+		let mut tokens = L::Tokens::from_u8(0).unwrap();
+		for msg_req in &msg_reqs {
+			let msg_tokens = L::count_tokens(&msg_req.to_string()).unwrap_or_default();
+			tokens = tokens.saturating_add(&msg_tokens);
+		}
+		self.inner.extend(msg_reqs);
+		match self.tokens.checked_add(&tokens) {
+			Some(v) => self.tokens = v,
+			None => {
+				error!("Token overflow");
+			},
+		}
+	}
+
+	pub fn into_vec(self) -> Vec<L::Request> {
+		self.inner.into()
+	}
 }

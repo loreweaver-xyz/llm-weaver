@@ -1,515 +1,291 @@
 use async_trait::async_trait;
-use rocksdb::{
-	BoundColumnFamily, ColumnFamilyDescriptor, MultiThreaded, OptimisticTransactionDB, Options,
-};
+use rocksdb::{ColumnFamilyDescriptor, OptimisticTransactionDB, Options, Transaction};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{fmt::Debug, sync::Arc};
-use tracing::error;
 
-use crate::{types::StorageError, Config, TapestryFragment, TapestryId};
+use crate::{types::StorageError, Config, Result, TapestryFragment, TapestryId};
 
 use super::TapestryChestHandler;
 
-/// RocksDB implementation of the storage backend.
-///
-/// This struct provides methods to interact with the RocksDB database
-/// for storing tapestry fragments, metadata, and instance counts.
-/// It utilizes column families to separate different types of data,
-/// improving data organization and access efficiency.
-#[derive(Clone)]
-pub struct RocksDbBackend<'db> {
-	db: Arc<OptimisticTransactionDB<MultiThreaded>>,
-	phantom: std::marker::PhantomData<&'db ()>,
+const INSTANCE_COUNTS_CF: &str = "instance_counts";
+const TAPESTRY_METADATA_CF: &str = "tapestry_metadata";
+const TAPESTRY_FRAGMENTS_CF: &str = "tapestry_fragments";
+
+pub struct RocksDbBackend {
+	db: Arc<OptimisticTransactionDB>,
 }
 
-impl<'db> RocksDbBackend<'db> {
-	/// Creates a new instance of the RocksDbBackend.
-	///
-	/// Initializes the RocksDB database with specified column families
-	/// for instance counts, tapestry metadata, and tapestry fragments.
-	fn new() -> Result<Self, StorageError> {
+impl RocksDbBackend {
+	pub fn new() -> Result<Self> {
 		let mut opts = Options::default();
 		opts.create_if_missing(true);
 		opts.create_missing_column_families(true);
 
-		// Set up cache and memory usage options
-		let cache = rocksdb::Cache::new_lru_cache(1 << 20); // 1 MB cache
-		let mut block_opts = rocksdb::BlockBasedOptions::default();
-		block_opts.set_block_cache(&cache);
-		opts.set_block_based_table_factory(&block_opts);
-
-		// Define the column families
 		let cf_descriptors = vec![
-			ColumnFamilyDescriptor::new("instance_counts", Options::default()),
-			ColumnFamilyDescriptor::new("tapestry_metadata", Options::default()),
-			ColumnFamilyDescriptor::new("tapestry_fragments", Options::default()),
+			ColumnFamilyDescriptor::new(INSTANCE_COUNTS_CF, Options::default()),
+			ColumnFamilyDescriptor::new(TAPESTRY_METADATA_CF, Options::default()),
+			ColumnFamilyDescriptor::new(TAPESTRY_FRAGMENTS_CF, Options::default()),
 		];
 
-		// Open the database with the specified column families
-		let db = OptimisticTransactionDB::<MultiThreaded>::open_cf_descriptors(
-			&opts,
-			"rocksdb-data",
-			cf_descriptors,
-		)
-		.map_err(StorageError::RocksDb)?;
+		let db =
+			OptimisticTransactionDB::open_cf_descriptors(&opts, "rocksdb-data", cf_descriptors)
+				.map_err(|e| StorageError::DatabaseError(e.to_string()))?;
 
-		Ok(Self { db: Arc::new(db), phantom: std::marker::PhantomData })
+		Ok(Self { db: Arc::new(db) })
 	}
 
-	fn get_cf_instance_counts(&'db self) -> Result<Arc<BoundColumnFamily<'db>>, StorageError> {
-		self.db
-			.cf_handle("instance_counts")
-			.ok_or_else(|| StorageError::InternalError("Column family not found".to_string()))
-	}
-
-	fn get_cf_tapestry_metadata(&'db self) -> Result<Arc<BoundColumnFamily<'db>>, StorageError> {
-		self.db
-			.cf_handle("tapestry_metadata")
-			.ok_or_else(|| StorageError::InternalError("Column family not found".to_string()))
-	}
-
-	fn get_cf_tapestry_fragments(&'db self) -> Result<Arc<BoundColumnFamily<'db>>, StorageError> {
-		self.db
-			.cf_handle("tapestry_fragments")
-			.ok_or_else(|| StorageError::InternalError("Column family not found".to_string()))
-	}
-
-	/// Executes a transactional operation on the database.
-	///
-	/// The provided function `func` is executed within a transaction.
-	/// If the function returns an error, the transaction is aborted.
-	///
-	/// # Arguments
-	///
-	/// * `func` - A closure that takes a mutable reference to a `RocksDbTransaction` and returns a
-	///   `Result`.
-	pub fn transaction<F, T>(&self, func: F) -> Result<T, StorageError>
+	fn transaction<F, T>(&self, func: F) -> Result<T>
 	where
-		F: FnOnce(&mut RocksDbTransaction) -> Result<T, StorageError>,
+		F: FnOnce(&mut RocksDbTransaction) -> Result<T>,
 	{
 		let txn = self.db.transaction();
-		let mut txn_backend = RocksDbTransaction { txn };
+		let mut txn_backend = RocksDbTransaction { txn, db: self.db.clone() };
 		let value = func(&mut txn_backend)?;
-		txn_backend.txn.commit().map_err(StorageError::RocksDb)?;
+		txn_backend
+			.txn
+			.commit()
+			.map_err(|e| StorageError::DatabaseError(e.to_string()))?;
 		Ok(value)
 	}
-
-	/// Retrieves a value from the database by key and column family.
-	fn get_cf(
-		&self,
-		cf: &Arc<BoundColumnFamily<'db>>,
-		key: &str,
-	) -> Result<Option<Vec<u8>>, StorageError> {
-		self.db.get_cf(cf, key.as_bytes()).map_err(StorageError::RocksDb)
-	}
-
-	/// Inserts a key-value pair into the database under the specified column family.
-	fn put_cf(
-		&self,
-		cf: &Arc<BoundColumnFamily<'db>>,
-		key: &str,
-		value: &[u8],
-	) -> Result<(), StorageError> {
-		self.db.put_cf(cf, key.as_bytes(), value).map_err(StorageError::RocksDb)
-	}
-
-	/// Deletes a key from the database under the specified column family.
-	fn delete_cf(&self, cf: &Arc<BoundColumnFamily<'db>>, key: &str) -> Result<(), StorageError> {
-		self.db.delete_cf(cf, key.as_bytes()).map_err(StorageError::RocksDb)
-	}
-
-	/// Checks if a key exists in the database under the specified column family.
-	fn key_exists_cf(
-		&self,
-		cf: &Arc<BoundColumnFamily<'db>>,
-		key: &str,
-	) -> Result<bool, StorageError> {
-		match self.db.get_cf(cf, key.as_bytes()) {
-			Ok(Some(_)) => Ok(true),
-			Ok(None) => Ok(false),
-			Err(e) => Err(StorageError::RocksDb(e)),
-		}
-	}
 }
 
-/// A transactional wrapper around RocksDB operations.
-///
-/// This struct provides methods to perform database operations within a transaction.
-struct RocksDbTransaction<'db> {
-	txn: rocksdb::Transaction<'db, OptimisticTransactionDB<MultiThreaded>>,
+struct RocksDbTransaction<'a> {
+	txn: Transaction<'a, OptimisticTransactionDB>,
+	db: Arc<OptimisticTransactionDB>,
 }
 
-impl<'db> RocksDbTransaction<'db> {
-	/// Retrieves a value from the transaction by key and column family.
-	fn get_cf(
-		&self,
-		cf: &Arc<BoundColumnFamily<'db>>,
-		key: &str,
-	) -> Result<Option<Vec<u8>>, StorageError> {
-		self.txn.get_cf(cf, key.as_bytes()).map_err(StorageError::RocksDb)
+impl<'a> RocksDbTransaction<'a> {
+	fn get_cf(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
+			StorageError::DatabaseError(format!("Column family not found: {}", cf))
+		})?;
+		self.txn
+			.get_cf(&cf_handle, key)
+			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	/// Inserts a key-value pair into the transaction under the specified column family.
-	fn put_cf(
-		&self,
-		cf: &Arc<BoundColumnFamily<'db>>,
-		key: &str,
-		value: &[u8],
-	) -> Result<(), StorageError> {
-		self.txn.put_cf(cf, key.as_bytes(), value).map_err(StorageError::RocksDb)
+	fn put_cf(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
+		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
+			StorageError::DatabaseError(format!("Column family not found: {}", cf))
+		})?;
+		self.txn
+			.put_cf(&cf_handle, key, value)
+			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	/// Deletes a key from the transaction under the specified column family.
-	fn delete_cf(&self, cf: &Arc<BoundColumnFamily<'db>>, key: &str) -> Result<(), StorageError> {
-		self.txn.delete_cf(cf, key.as_bytes()).map_err(StorageError::RocksDb)
-	}
-
-	/// Checks if a key exists in the transaction under the specified column family.
-	fn key_exists_cf(
-		&self,
-		cf: &Arc<BoundColumnFamily<'db>>,
-		key: &str,
-	) -> Result<bool, StorageError> {
-		match self.txn.get_cf(cf, key.as_bytes()) {
-			Ok(Some(_)) => Ok(true),
-			Ok(None) => Ok(false),
-			Err(e) => Err(StorageError::RocksDb(e)),
-		}
+	fn delete_cf(&self, cf: &str, key: &[u8]) -> Result<()> {
+		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
+			StorageError::DatabaseError(format!("Column family not found: {}", cf))
+		})?;
+		self.txn
+			.delete_cf(&cf_handle, key)
+			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 }
 
 #[async_trait]
-impl<'db, T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandler<T>
-	for RocksDbBackend<'db>
+impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandler<T>
+	for RocksDbBackend
 {
 	type Error = StorageError;
 
-	/// Creates a new instance of the RocksDbBackend.
 	fn new() -> Self {
 		Self::new().expect("Failed to create RocksDB backend")
 	}
 
-	/// Saves a tapestry fragment to the database.
-	///
-	/// If `increment` is `true`, the instance count is incremented.
-	/// Otherwise, it uses the current instance count or sets it to 1 if not present.
-	///
-	/// # Arguments
-	///
-	/// * `tapestry_id` - The identifier of the tapestry.
-	/// * `tapestry_fragment` - The tapestry fragment to save.
-	/// * `increment` - Whether to increment the instance count.
-	async fn save_tapestry_fragment<TID: TapestryId + Send + Sync + 'static>(
+	async fn save_tapestry_fragment<TID: TapestryId>(
 		&self,
 		tapestry_id: &TID,
 		tapestry_fragment: TapestryFragment<T>,
 		increment: bool,
-	) -> crate::Result<u64> {
-		let fragment_bytes = serde_json::to_vec(&tapestry_fragment).map_err(|e| {
-			error!("Failed to serialize tapestry fragment: {}", e);
-			StorageError::Parsing
-		})?;
+	) -> Result<u64> {
+		let fragment_bytes = serde_json::to_vec(&tapestry_fragment)
+			.map_err(|e| StorageError::SerializationError(e.to_string()))?;
 
-		let backend = self.clone();
-		let tapestry_id = tapestry_id.clone();
+		self.transaction(|txn| {
+			let instance_count_key = derive_instance_count_key(tapestry_id);
+			let current_count = txn
+				.get_cf(INSTANCE_COUNTS_CF, instance_count_key.as_bytes())?
+				.map(|bytes| {
+					String::from_utf8(bytes)
+						.map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()?
+				.map(|s| {
+					s.parse::<u64>().map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()?
+				.unwrap_or(0);
 
-		let new_count = backend.transaction(|txn| {
-			let instance_count_key_cf = backend.get_cf_instance_counts()?;
-			let tapestry_fragments_cf = backend.get_cf_tapestry_fragments()?;
+			let new_count = if increment { current_count + 1 } else { current_count.max(1) };
 
-			// Read the current instance count from cf_instance_counts
-			let instance_count_key = derive_instance_count_key(&tapestry_id);
-			let current_count_bytes = txn.get_cf(&instance_count_key_cf, &instance_count_key)?;
-			let current_count = match current_count_bytes {
-				Some(bytes) => deserialize_instance_count(bytes)?,
-				None => 0,
-			};
-
-			let new_count = if increment {
-				current_count + 1
-			} else if current_count == 0 {
-				1
-			} else {
-				current_count
-			};
-
-			// Write the updated count to cf_instance_counts
 			txn.put_cf(
-				&instance_count_key_cf,
-				&instance_count_key,
+				INSTANCE_COUNTS_CF,
+				instance_count_key.as_bytes(),
 				new_count.to_string().as_bytes(),
 			)?;
 
-			// Write the tapestry fragment to cf_tapestry_fragments
-			let instance_key = derive_instance_key(&tapestry_id, new_count);
-			txn.put_cf(&tapestry_fragments_cf, &instance_key, &fragment_bytes)?;
+			let fragment_key = derive_instance_key(tapestry_id, new_count);
+			txn.put_cf(TAPESTRY_FRAGMENTS_CF, fragment_key.as_bytes(), &fragment_bytes)?;
 
 			Ok(new_count)
-		})?;
-
-		Ok(new_count)
+		})
 	}
 
-	/// Saves tapestry metadata to the database.
-	///
-	/// # Arguments
-	///
-	/// * `tapestry_id` - The identifier of the tapestry.
-	/// * `metadata` - The metadata to save.
 	async fn save_tapestry_metadata<TID: TapestryId, M: Serialize + Debug + Clone + Send + Sync>(
 		&self,
 		tapestry_id: TID,
 		metadata: M,
-	) -> crate::Result<()> {
-		let backend = self.clone();
+	) -> Result<()> {
+		let metadata_bytes = serde_json::to_vec(&metadata)
+			.map_err(|e| StorageError::SerializationError(e.to_string()))?;
 
-		let metadata_bytes = serde_json::to_vec(&metadata).map_err(|e| {
-			error!("Failed to serialize tapestry metadata: {}", e);
-			StorageError::Parsing
-		})?;
-
-		backend
-			.transaction(|txn| {
-				let instance_counts_cf = backend.get_cf_instance_counts()?;
-				let tapestry_metadata_cf = backend.get_cf_tapestry_metadata()?;
-				let tapestry_fragments_cf = backend.get_cf_tapestry_fragments()?;
-
-				// Check if the tapestry exists
-				let instance_count_key = derive_instance_count_key(&tapestry_id);
-				if !backend.key_exists_cf(&instance_counts_cf, &instance_count_key)? {
-					return Err(StorageError::NotFound.into());
-				}
-
-				let instance_count_bytes =
-					backend.get_cf(&instance_counts_cf, &instance_count_key)?;
-				let instance_count = match instance_count_bytes {
-					Some(bytes) => deserialize_instance_count(bytes)?,
-					None => return Err(StorageError::NotFound.into()),
-				};
-
-				// Check if tapestry instance exists
-				let instance_key = derive_instance_key(&tapestry_id, instance_count);
-				if !backend.key_exists_cf(&tapestry_fragments_cf, &instance_key)? {
-					return Err(StorageError::NotFound.into());
-				}
-
-				let metadata_key = derive_metadata_key(&tapestry_id);
-
-				txn.put_cf(&tapestry_metadata_cf, &metadata_key, &metadata_bytes)?;
-
-				Ok(())
-			})
-			.map_err(|e| e.into())
+		self.transaction(|txn| {
+			let metadata_key = derive_metadata_key(&tapestry_id);
+			txn.put_cf(TAPESTRY_METADATA_CF, metadata_key.as_bytes(), &metadata_bytes)
+		})
 	}
 
-	/// Retrieves the instance count of a tapestry.
-	///
-	/// # Arguments
-	///
-	/// * `tapestry_id` - The identifier of the tapestry.
-	async fn get_tapestry<TID: TapestryId + Send + Sync + 'static>(
-		&self,
-		tapestry_id: TID,
-	) -> crate::Result<Option<u16>> {
-		let backend = self.clone();
-
-		let instance_counts_cf = backend.get_cf_instance_counts()?;
-
+	async fn get_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> Result<Option<u16>> {
 		let instance_count_key = derive_instance_count_key(&tapestry_id);
-		match self.get_cf(&instance_counts_cf, &instance_count_key)? {
-			Some(bytes) => {
-				let count = deserialize_instance_count(bytes)?;
-				Ok(Some(count as u16))
-			},
-			None => Ok(None),
-		}
+		self.transaction(|txn| {
+			txn.get_cf(INSTANCE_COUNTS_CF, instance_count_key.as_bytes())?
+				.map(|bytes| {
+					String::from_utf8(bytes)
+						.map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()?
+				.map(|s| {
+					s.parse::<u16>().map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()
+				.map_err(|e| e.into())
+		})
 	}
 
-	/// Retrieves a tapestry fragment from the database.
-	///
-	/// If `instance` is `None`, the latest instance is retrieved.
-	///
-	/// # Arguments
-	///
-	/// * `tapestry_id` - The identifier of the tapestry.
-	/// * `instance` - The instance number to retrieve.
-	async fn get_tapestry_fragment<TID: TapestryId + Send + Sync + 'static>(
+	async fn get_tapestry_fragment<TID: TapestryId>(
 		&self,
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> crate::Result<Option<TapestryFragment<T>>> {
-		let backend = self.clone();
-
-		let instance_counts_cf = backend.get_cf_instance_counts()?;
-		let tapestry_fragments_cf = backend.get_cf_tapestry_fragments()?;
-
-		let instance = match instance {
-			Some(i) => i,
-			None => {
+	) -> Result<Option<TapestryFragment<T>>> {
+		self.transaction(|txn| {
+			let instance = if let Some(i) = instance {
+				i
+			} else {
 				let instance_count_key = derive_instance_count_key(&tapestry_id);
-				match backend.get_cf(&instance_counts_cf, &instance_count_key)? {
-					Some(bytes) => deserialize_instance_count(bytes)?,
+				match txn.get_cf(INSTANCE_COUNTS_CF, instance_count_key.as_bytes())? {
+					Some(count_bytes) => String::from_utf8(count_bytes)
+						.map_err(|e| StorageError::DeserializationError(e.to_string()))?
+						.parse::<u64>()
+						.map_err(|e| StorageError::DeserializationError(e.to_string()))?,
 					None => return Ok(None),
 				}
-			},
-		};
+			};
 
-		let instance_key = derive_instance_key(&tapestry_id, instance);
-		match backend.get_cf(&tapestry_fragments_cf, &instance_key)? {
-			Some(bytes) => {
-				let fragment: TapestryFragment<T> =
-					serde_json::from_slice(&bytes).map_err(|e| {
-						error!("Failed to deserialize tapestry fragment: {}", e);
-						StorageError::Parsing
-					})?;
-				Ok(Some(fragment))
-			},
-			None => Ok(None),
-		}
+			let fragment_key = derive_instance_key(&tapestry_id, instance);
+			txn.get_cf(TAPESTRY_FRAGMENTS_CF, fragment_key.as_bytes())?
+				.map(|bytes| {
+					serde_json::from_slice(&bytes)
+						.map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()
+				.map_err(|e| e.into())
+		})
 	}
 
-	/// Retrieves tapestry metadata from the database.
-	///
-	/// # Arguments
-	///
-	/// * `tapestry_id` - The identifier of the tapestry.
-	async fn get_tapestry_metadata<
-		TID: TapestryId + Send + Sync + 'static,
-		M: DeserializeOwned + Send + Sync,
-	>(
+	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Send + Sync>(
 		&self,
 		tapestry_id: TID,
-	) -> crate::Result<Option<M>> {
-		let backend = self.clone();
-
-		let cf_tapestry_metadata = backend.get_cf_tapestry_metadata()?;
-
+	) -> Result<Option<M>> {
 		let metadata_key = derive_metadata_key(&tapestry_id);
-		match backend.get_cf(&cf_tapestry_metadata, &metadata_key)? {
-			Some(bytes) => {
-				let metadata: M = serde_json::from_slice(&bytes).map_err(|e| {
-					error!("Failed to parse tapestry metadata: {}", e);
-					StorageError::Parsing
-				})?;
-				Ok(Some(metadata))
-			},
-			None => Ok(None),
-		}
+		self.transaction(|txn| {
+			txn.get_cf(TAPESTRY_METADATA_CF, metadata_key.as_bytes())?
+				.map(|bytes| {
+					serde_json::from_slice(&bytes)
+						.map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()
+				.map_err(|e| e.into())
+		})
 	}
 
-	/// Deletes a tapestry and all its fragments and metadata from the database.
-	///
-	/// # Arguments
-	///
-	/// * `tapestry_id` - The identifier of the tapestry.
-	async fn delete_tapestry<TID: TapestryId + Send + Sync + 'static>(
-		&self,
-		tapestry_id: TID,
-	) -> crate::Result<()> {
-		let backend = self.clone();
+	async fn delete_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> Result<()> {
+		self.transaction(|txn| {
+			let instance_count_key = derive_instance_count_key(&tapestry_id);
+			let current_count: u64 = txn
+				.get_cf(INSTANCE_COUNTS_CF, instance_count_key.as_bytes())?
+				.map(|bytes| {
+					String::from_utf8(bytes)
+						.map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()?
+				.map(|s| {
+					s.parse::<u64>().map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()?
+				.unwrap_or(0);
 
-		backend
-			.transaction(|txn| {
-				let instance_counts_cf = backend.get_cf_instance_counts()?;
-				let tapestry_metadata_cf = backend.get_cf_tapestry_metadata()?;
-				let tapestry_fragments_cf = backend.get_cf_tapestry_fragments()?;
+			// Delete all fragments
+			for i in 1..=current_count {
+				let fragment_key = derive_instance_key(&tapestry_id, i);
+				txn.delete_cf(TAPESTRY_FRAGMENTS_CF, fragment_key.as_bytes())?;
+			}
 
-				let instance_count_key = derive_instance_count_key(&tapestry_id);
-				let instance_count =
-					match backend.get_cf(&instance_counts_cf, &instance_count_key)? {
-						Some(bytes) => deserialize_instance_count(bytes)?,
-						None => return Ok(()), // Nothing to delete
-					};
+			// Delete instance count
+			txn.delete_cf(INSTANCE_COUNTS_CF, instance_count_key.as_bytes())?;
 
-				// Delete each instance
-				for instance in 1..=instance_count {
-					let instance_key = derive_instance_key(&tapestry_id, instance);
-					txn.delete_cf(&tapestry_fragments_cf, &instance_key)?;
-				}
-				// Delete the instance count key
-				txn.delete_cf(&instance_counts_cf, &instance_count_key)?;
+			// Delete metadata
+			let metadata_key = derive_metadata_key(&tapestry_id);
+			txn.delete_cf(TAPESTRY_METADATA_CF, metadata_key.as_bytes())?;
 
-				// Delete the metadata key
-				let metadata_key = derive_metadata_key(&tapestry_id);
-				txn.delete_cf(&tapestry_metadata_cf, &metadata_key)?;
-
-				Ok(())
-			})
-			.map_err(|e| e.into())
+			Ok(())
+		})
 	}
 
-	/// Deletes a specific tapestry fragment from the database.
-	///
-	/// If `instance` is `None`, the latest instance is deleted.
-	///
-	/// # Arguments
-	///
-	/// * `tapestry_id` - The identifier of the tapestry.
-	/// * `instance` - The instance number to delete.
-	async fn delete_tapestry_fragment<TID: TapestryId + Send + Sync + 'static>(
+	async fn delete_tapestry_fragment<TID: TapestryId>(
 		&self,
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> crate::Result<()> {
-		let backend = self.clone();
+	) -> Result<()> {
+		self.transaction(|txn| {
+			let instance_count_key = derive_instance_count_key(&tapestry_id);
+			let current_count: u64 = txn
+				.get_cf(INSTANCE_COUNTS_CF, instance_count_key.as_bytes())?
+				.map(|bytes| {
+					String::from_utf8(bytes)
+						.map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()?
+				.map(|s| {
+					s.parse::<u64>().map_err(|e| StorageError::DeserializationError(e.to_string()))
+				})
+				.transpose()?
+				.unwrap_or(0);
 
-		backend
-			.transaction(|txn| {
-				let instance_counts_cf = backend.get_cf_instance_counts()?;
-				let tapestry_fragments_cf = backend.get_cf_tapestry_fragments()?;
+			let instance_to_delete = instance.unwrap_or(current_count);
 
-				let instance = match instance {
-					Some(i) => i,
-					None => {
-						// Get the instance count from the database
-						let instance_count_key = derive_instance_count_key(&tapestry_id);
-						match backend.get_cf(&instance_counts_cf, &instance_count_key)? {
-							Some(bytes) => deserialize_instance_count(bytes)?,
-							None => return Ok(()), // Nothing to delete
-						}
-					},
-				};
+			if instance_to_delete > 0 && instance_to_delete <= current_count {
+				let fragment_key = derive_instance_key(&tapestry_id, instance_to_delete);
+				txn.delete_cf(TAPESTRY_FRAGMENTS_CF, fragment_key.as_bytes())?;
 
-				let instance_key = derive_instance_key(&tapestry_id, instance);
-				let instance_count_key = derive_instance_count_key(&tapestry_id);
-
-				txn.delete_cf(&tapestry_fragments_cf, &instance_key)?;
-
-				// Update the instance count if needed
-				let current_count_bytes = txn.get_cf(&instance_counts_cf, &instance_count_key)?;
-				let current_count = match current_count_bytes {
-					Some(bytes) => deserialize_instance_count(bytes)?,
-					None => return Ok(()), // No instance count, nothing to update
-				};
-
-				if current_count == instance {
-					// Decrease the instance count
+				// Update instance count if we deleted the last fragment
+				if instance_to_delete == current_count {
 					let new_count = current_count - 1;
-					if new_count == 0 {
-						txn.delete_cf(&instance_counts_cf, &instance_count_key)?;
-					} else {
+					if new_count > 0 {
 						txn.put_cf(
-							&instance_counts_cf,
-							&instance_count_key,
+							INSTANCE_COUNTS_CF,
+							instance_count_key.as_bytes(),
 							new_count.to_string().as_bytes(),
 						)?;
+					} else {
+						txn.delete_cf(INSTANCE_COUNTS_CF, instance_count_key.as_bytes())?;
 					}
 				}
+			}
 
-				Ok(())
-			})
-			.map_err(|e| e.into())
+			Ok(())
+		})
 	}
-}
-
-/// Deserializes the instance count from a byte vector.
-///
-/// # Arguments
-///
-/// * `bytes` - The byte vector containing the instance count.
-fn deserialize_instance_count(bytes: Vec<u8>) -> Result<u64, StorageError> {
-	let count_str = String::from_utf8(bytes).map_err(|_| StorageError::Parsing)?;
-	count_str.parse::<u64>().map_err(|_| StorageError::Parsing)
 }
 
 /// Derives the key for storing the instance count of a tapestry.
@@ -538,4 +314,425 @@ fn derive_instance_key<TID: TapestryId>(tapestry_id: &TID, instance: u64) -> Str
 /// * `tapestry_id` - The identifier of the tapestry.
 fn derive_metadata_key<TID: TapestryId>(tapestry_id: &TID) -> String {
 	tapestry_id.base_key()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::{
+		types::{PromptModelTokens, SummaryModelTokens, WrapperRole},
+		Config, ContextMessage, Llm, TapestryFragment, TapestryId,
+	};
+	use bounded_integer::BoundedU8;
+	use serde::Deserialize;
+	use std::{
+		sync::Arc,
+		time::{SystemTime, UNIX_EPOCH},
+	};
+	use tokio::{sync::Barrier, task};
+	use uuid::Uuid;
+
+	#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+	struct TestConfig;
+
+	impl Config for TestConfig {
+		const TOKEN_THRESHOLD_PERCENTILE: BoundedU8<0, 100> = BoundedU8::new(85).unwrap();
+		const MINIMUM_RESPONSE_LENGTH: u64 = 100;
+
+		type PromptModel = TestLlm;
+		type SummaryModel = TestLlm;
+		type Chest = RocksDbBackend;
+
+		fn convert_prompt_tokens_to_summary_model_tokens(
+			tokens: PromptModelTokens<Self>,
+		) -> SummaryModelTokens<Self> {
+			tokens
+		}
+	}
+
+	impl From<ContextMessage<TestConfig>> for String {
+		fn from(msg: ContextMessage<TestConfig>) -> Self {
+			msg.content
+		}
+	}
+
+	#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+	struct TestLlm;
+
+	#[async_trait]
+	impl Llm<TestConfig> for TestLlm {
+		type Tokens = u16;
+		type Request = String;
+		type Response = String;
+		type Parameters = ();
+
+		fn max_context_length(&self) -> Self::Tokens {
+			1000
+		}
+
+		fn name(&self) -> &'static str {
+			"TestLlm"
+		}
+
+		fn alias(&self) -> &'static str {
+			"TestLlm"
+		}
+
+		fn count_tokens(content: &str) -> Result<Self::Tokens> {
+			Ok(content.len() as u16)
+		}
+
+		async fn prompt(
+			&self,
+			_is_summarizing: bool,
+			_prompt_tokens: Self::Tokens,
+			msgs: Vec<Self::Request>,
+			_params: &Self::Parameters,
+			_max_tokens: Self::Tokens,
+		) -> Result<Self::Response> {
+			Ok(msgs.join(" "))
+		}
+
+		fn compute_cost(&self, prompt_tokens: Self::Tokens, response_tokens: Self::Tokens) -> f64 {
+			(prompt_tokens + response_tokens) as f64 * 0.001
+		}
+	}
+
+	#[derive(Debug, Clone)]
+	struct TestTapestryId(Uuid);
+
+	impl TapestryId for TestTapestryId {
+		fn base_key(&self) -> String {
+			self.0.to_string()
+		}
+	}
+
+	fn create_test_backend() -> RocksDbBackend {
+		RocksDbBackend::new().unwrap()
+	}
+
+	fn create_test_tapestry_fragment() -> TapestryFragment<TestConfig> {
+		let mut fragment = TapestryFragment::default();
+		fragment.context_tokens = 10;
+		fragment.context_messages.push(ContextMessage::new(
+			WrapperRole::from("user"),
+			"Test message".to_string(),
+			Some("user1".to_string()),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().to_string(),
+		));
+		fragment
+	}
+
+	#[tokio::test]
+	async fn test_save_and_get_tapestry_fragment() {
+		let backend = create_test_backend();
+		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let fragment = create_test_tapestry_fragment();
+
+		let instance = backend
+			.save_tapestry_fragment(&tapestry_id, fragment.clone(), true)
+			.await
+			.unwrap();
+		assert_eq!(instance, 1);
+
+		let retrieved_fragment: TapestryFragment<TestConfig> = backend
+			.get_tapestry_fragment(tapestry_id, Some(instance))
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(retrieved_fragment.context_tokens, fragment.context_tokens);
+		assert_eq!(retrieved_fragment.context_messages.len(), fragment.context_messages.len());
+	}
+
+	#[tokio::test]
+	async fn test_save_and_get_tapestry_metadata() {
+		let backend = create_test_backend();
+		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let metadata = "Test metadata".to_string();
+
+		<RocksDbBackend as TapestryChestHandler<TestConfig>>::save_tapestry_metadata::<
+			TestTapestryId,
+			String,
+		>(&backend, tapestry_id.clone(), metadata.clone())
+		.await
+		.unwrap();
+
+		let retrieved_metadata: String =
+			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_metadata(
+				&backend,
+				tapestry_id,
+			)
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(retrieved_metadata, metadata);
+	}
+
+	#[tokio::test]
+	async fn test_get_tapestry() {
+		let backend = create_test_backend();
+		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let fragment = create_test_tapestry_fragment();
+
+		backend.save_tapestry_fragment(&tapestry_id, fragment, true).await.unwrap();
+
+		let instance_count = <RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry(
+			&backend,
+			tapestry_id,
+		)
+		.await
+		.unwrap()
+		.unwrap();
+		assert_eq!(instance_count, 1);
+	}
+
+	#[tokio::test]
+	async fn test_delete_tapestry() {
+		let backend = create_test_backend();
+		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let fragment = create_test_tapestry_fragment();
+
+		backend.save_tapestry_fragment(&tapestry_id, fragment, true).await.unwrap();
+		<RocksDbBackend as TapestryChestHandler<TestConfig>>::delete_tapestry(
+			&backend,
+			tapestry_id.clone(),
+		)
+		.await
+		.unwrap();
+
+		let instance_count = <RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry(
+			&backend,
+			tapestry_id,
+		)
+		.await
+		.unwrap();
+		assert_eq!(instance_count, None);
+	}
+
+	#[tokio::test]
+	async fn test_delete_tapestry_fragment() {
+		let backend = create_test_backend();
+		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let fragment = create_test_tapestry_fragment();
+
+		backend
+			.save_tapestry_fragment(&tapestry_id, fragment.clone(), true)
+			.await
+			.unwrap();
+		backend.save_tapestry_fragment(&tapestry_id, fragment, true).await.unwrap();
+
+		<RocksDbBackend as TapestryChestHandler<TestConfig>>::delete_tapestry_fragment(
+			&backend,
+			tapestry_id.clone(),
+			Some(1),
+		)
+		.await
+		.unwrap();
+
+		let instance_count = <RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry(
+			&backend,
+			tapestry_id.clone(),
+		)
+		.await
+		.unwrap()
+		.unwrap();
+		assert_eq!(instance_count, 1);
+
+		let retrieved_fragment =
+			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_fragment(
+				&backend,
+				tapestry_id,
+				Some(1),
+			)
+			.await
+			.unwrap();
+		assert_eq!(retrieved_fragment, None);
+	}
+
+	#[tokio::test]
+	async fn test_concurrent_saves() {
+		let backend = Arc::new(create_test_backend());
+		let tapestry_id = Arc::new(TestTapestryId(Uuid::new_v4()));
+		let barrier = Arc::new(Barrier::new(10));
+
+		let mut handles = vec![];
+
+		for i in 0..10 {
+			let backend = backend.clone();
+			let tapestry_id = tapestry_id.clone();
+			let barrier = barrier.clone();
+
+			handles.push(task::spawn(async move {
+				let mut fragment = create_test_tapestry_fragment();
+				fragment.context_messages[0].content = format!("Test message {}", i);
+
+				barrier.wait().await;
+				<RocksDbBackend as TapestryChestHandler<TestConfig>>::save_tapestry_fragment::<
+					TestTapestryId,
+				>(&backend, &tapestry_id, fragment, true)
+				.await
+				.unwrap()
+			}));
+		}
+
+		let results: Vec<Option<u64>> = futures::future::join_all(handles)
+			.await
+			.into_iter()
+			.filter_map(|r| r.ok())
+			.map(Some)
+			.collect();
+
+		let instance_count = <RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry(
+			&backend,
+			tapestry_id.as_ref().clone(),
+		)
+		.await
+		.unwrap()
+		.unwrap();
+		assert_eq!(instance_count as usize, results.len());
+		assert_eq!(results.into_iter().max().unwrap(), Some(10));
+	}
+
+	#[tokio::test]
+	async fn test_concurrent_reads_and_writes() {
+		let backend = Arc::new(create_test_backend());
+		let tapestry_id = Arc::new(TestTapestryId(Uuid::new_v4()));
+		let barrier = Arc::new(Barrier::new(20));
+
+		let mut handles = vec![];
+
+		for i in 0..10 {
+			let backend = backend.clone();
+			let tapestry_id = tapestry_id.clone();
+			let barrier = barrier.clone();
+
+			handles.push(task::spawn(async move {
+				let mut fragment = create_test_tapestry_fragment();
+				fragment.context_messages[0].content = format!("Test message {}", i);
+
+				barrier.wait().await;
+				<RocksDbBackend as TapestryChestHandler<TestConfig>>::save_tapestry_fragment::<
+					TestTapestryId,
+				>(&backend, &tapestry_id, fragment, true)
+				.await
+				.unwrap()
+			}));
+		}
+
+		for _ in 0..10 {
+			let backend = backend.clone();
+			let tapestry_id = tapestry_id.clone();
+			let barrier = barrier.clone();
+
+			handles.push(task::spawn(async move {
+				barrier.wait().await;
+				<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry::<TestTapestryId>(
+					&backend,
+					tapestry_id.as_ref().clone(),
+				)
+				.await
+				.unwrap().unwrap() as u64
+			}));
+		}
+
+		let results: Vec<Option<u64>> = futures::future::join_all(handles)
+			.await
+			.into_iter()
+			.filter_map(|r| r.ok())
+			.map(Some)
+			.collect();
+
+		let write_results: Vec<u64> = results.iter().filter_map(|&r| r.map(|v| v as u64)).collect();
+		let read_results: Vec<Option<u64>> = results
+			.iter()
+			.filter_map(|&r| if r.is_some() { None } else { Some(r) })
+			.collect();
+
+		assert_eq!(write_results.len(), 10);
+		assert_eq!(read_results.len(), 10);
+		assert!(write_results.into_iter().max().unwrap() <= 10);
+	}
+
+	#[tokio::test]
+	async fn test_tapestry_fragment_versioning() {
+		let backend = create_test_backend();
+		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let fragment1 = create_test_tapestry_fragment();
+		let mut fragment2 = create_test_tapestry_fragment();
+		fragment2.context_messages[0].content = "Updated message".to_string();
+
+		let instance1 = backend
+			.save_tapestry_fragment(&tapestry_id, fragment1.clone(), true)
+			.await
+			.unwrap();
+		let instance2 = backend
+			.save_tapestry_fragment(&tapestry_id, fragment2.clone(), true)
+			.await
+			.unwrap();
+
+		assert_eq!(instance1, 1);
+		assert_eq!(instance2, 2);
+
+		let retrieved_fragment1 =
+			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_fragment(
+				&backend,
+				tapestry_id.clone(),
+				Some(1),
+			)
+			.await
+			.unwrap()
+			.unwrap();
+		let retrieved_fragment2 =
+			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_fragment(
+				&backend,
+				tapestry_id,
+				Some(2),
+			)
+			.await
+			.unwrap()
+			.unwrap();
+
+		assert_eq!(
+			retrieved_fragment1.context_messages[0].content,
+			fragment1.context_messages[0].content
+		);
+		assert_eq!(
+			retrieved_fragment2.context_messages[0].content,
+			fragment2.context_messages[0].content
+		);
+	}
+
+	#[tokio::test]
+	async fn test_large_tapestry_fragment() {
+		let backend = create_test_backend();
+		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let mut fragment = create_test_tapestry_fragment();
+
+		// Add a large number of messages to the fragment
+		for i in 0..1000 {
+			fragment.context_messages.push(ContextMessage::new(
+				WrapperRole::from("user"),
+				format!("Large message {}", i),
+				Some("user1".to_string()),
+				SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().to_string(),
+			));
+		}
+
+		let instance = backend
+			.save_tapestry_fragment(&tapestry_id, fragment.clone(), true)
+			.await
+			.unwrap();
+		assert_eq!(instance, 1);
+
+		let retrieved_fragment =
+			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_fragment(
+				&backend,
+				tapestry_id,
+				Some(instance),
+			)
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(retrieved_fragment.context_messages.len(), fragment.context_messages.len());
+	}
 }

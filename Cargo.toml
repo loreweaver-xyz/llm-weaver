@@ -36,5 +36,9 @@ bounded-integer = { version = "0.5.7", features = ["types", "num-traits02"] }
 aquamarine = "0.3.2"
 tiktoken-rs = "0.5.8"
 
+[dev-dependencies]
+futures = "0.3"
+uuid = { version = "1.0", features = ["v4"] }
+
 [features]
 rocksdb = ["dep:rocksdb"]

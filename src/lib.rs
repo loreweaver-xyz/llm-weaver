@@ -48,7 +48,6 @@
 #![feature(once_cell_try)]
 
 use std::{
-	collections::VecDeque,
 	fmt::{Debug, Display},
 	marker::PhantomData,
 	str::FromStr,
@@ -61,7 +60,7 @@ use num_traits::{
 	SaturatingSub, ToPrimitive, Unsigned,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tracing::{error, trace};
+use tracing::trace;
 
 pub mod architecture;
 pub mod loom;
@@ -101,6 +100,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 ///         format!("{}:{}", self.id, self.sub_id)
 ///     }
 /// }
+/// ```
 pub trait TapestryId: Debug + Clone + Send + Sync + 'static {
 	/// Returns the base key.
 	///
@@ -256,7 +256,7 @@ pub trait Config: Debug + Sized + Clone + Default + Send + Sync + 'static {
 }
 
 /// Context message that represent a single message in a [`TapestryFragment`] instance.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ContextMessage<T: Config> {
 	pub role: WrapperRole,
 	pub content: String,
@@ -285,7 +285,7 @@ impl<T: Config> ContextMessage<T> {
 /// The total number of `context_tokens` is tracked when [`Loom::weave`] is executed and if it
 /// exceeds the maximum number of tokens allowed for the current GPT [`Config::PromptModel`], then a
 /// summary is generated and a new [`TapestryFragment`] instance is created.
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, PartialEq, Clone)]
 pub struct TapestryFragment<T: Config> {
 	/// Total number of _GPT tokens_ in the `context_messages`.
 	pub context_tokens: <T::PromptModel as Llm<T>>::Tokens,
@@ -344,121 +344,5 @@ impl<T: Config> TapestryFragment<T> {
 		}
 
 		Ok(())
-	}
-}
-
-/// The machine that drives all of the core methods that should be used across any service
-/// that needs to prompt LLM and receive a response.
-///
-/// This is implemented over the [`Config`] trait.
-#[async_trait]
-pub trait Loom<T: Config> {
-	/// Prompt LLM Weaver for a response for [`TapestryId`].
-	///
-	/// Prompts LLM with the current [`TapestryFragment`] instance and the new `msgs`.
-	///
-	/// A summary will be generated of the current [`TapestryFragment`] instance if the total number
-	/// of tokens in the `context_messages` exceeds the maximum number of tokens allowed for the
-	/// current [`Config::PromptModel`] or custom max tokens. This threshold is affected by the
-	/// [`Config::TOKEN_THRESHOLD_PERCENTILE`].
-	///
-	/// # Parameters
-	///
-	/// - `prompt_llm_config`: The [`Config::PromptModel`] to use for prompting LLM.
-	/// - `summary_llm_config`: The [`Config::SummaryModel`] to use for generating summaries.
-	/// - `tapestry_id`: The [`TapestryId`] to use for storing the [`TapestryFragment`] instance.
-	/// - `instructions`: The instruction message to be used for the current [`TapestryFragment`]
-	///   instance.
-	/// - `msgs`: The messages to prompt the LLM with.
-	async fn weave<TID: TapestryId>(
-		&self,
-		prompt_llm_config: LlmConfig<T, T::PromptModel>,
-		summary_llm_config: LlmConfig<T, T::SummaryModel>,
-		tapestry_id: TID,
-		instructions: String,
-		mut msgs: Vec<ContextMessage<T>>,
-	) -> Result<(<<T as Config>::PromptModel as Llm<T>>::Response, u64, bool)>;
-	/// Generates the summary of the current [`TapestryFragment`] instance.
-	///
-	/// Returns the summary message as a string.
-	async fn generate_summary(
-		summary_model_config: LlmConfig<T, T::SummaryModel>,
-		tapestry_fragment: &TapestryFragment<T>,
-		summary_max_tokens: SummaryModelTokens<T>,
-	) -> Result<String>;
-	/// Helper method to build a [`ContextMessage`]
-	fn build_context_message(
-		role: WrapperRole,
-		content: String,
-		account_id: Option<String>,
-	) -> ContextMessage<T>;
-	fn count_tokens_in_messages(
-		msgs: impl Iterator<Item = &ContextMessage<T>>,
-	) -> <T::PromptModel as Llm<T>>::Tokens;
-}
-
-/// A helper struct to manage the prompt messages in a deque while keeping track of the tokens
-/// added or removed.
-struct VecPromptMsgsDeque<T: Config, L: Llm<T>> {
-	tokens: <L as Llm<T>>::Tokens,
-	inner: VecDeque<<L as Llm<T>>::Request>,
-}
-
-impl<T: Config, L: Llm<T>> VecPromptMsgsDeque<T, L> {
-	fn new() -> Self {
-		Self { tokens: L::Tokens::from_u8(0).unwrap(), inner: VecDeque::new() }
-	}
-
-	fn with_capacity(capacity: usize) -> Self {
-		Self { tokens: L::Tokens::from_u8(0).unwrap(), inner: VecDeque::with_capacity(capacity) }
-	}
-
-	fn push_front(&mut self, msg_reqs: L::Request) {
-		let tokens = L::count_tokens(&msg_reqs.to_string()).unwrap_or_default();
-		self.tokens = self.tokens.saturating_add(&tokens);
-		self.inner.push_front(msg_reqs);
-	}
-
-	fn push_back(&mut self, msg_reqs: L::Request) {
-		let tokens = L::count_tokens(&msg_reqs.to_string()).unwrap_or_default();
-		self.tokens = self.tokens.saturating_add(&tokens);
-		self.inner.push_back(msg_reqs);
-	}
-
-	fn append(&mut self, msg_reqs: &mut VecDeque<L::Request>) {
-		msg_reqs.iter().for_each(|msg_req| {
-			let msg_tokens = L::count_tokens(&msg_req.to_string()).unwrap_or_default();
-			self.tokens = self.tokens.saturating_add(&msg_tokens);
-		});
-		self.inner.append(msg_reqs);
-	}
-
-	fn truncate(&mut self, len: usize) {
-		let mut tokens = L::Tokens::from_u8(0).unwrap();
-		for msg_req in self.inner.iter().take(len) {
-			let msg_tokens = L::count_tokens(&msg_req.to_string()).unwrap_or_default();
-			tokens = tokens.saturating_add(&msg_tokens);
-		}
-		self.inner.truncate(len);
-		self.tokens = tokens;
-	}
-
-	fn extend(&mut self, msg_reqs: Vec<L::Request>) {
-		let mut tokens = L::Tokens::from_u8(0).unwrap();
-		for msg_req in &msg_reqs {
-			let msg_tokens = L::count_tokens(&msg_req.to_string()).unwrap_or_default();
-			tokens = tokens.saturating_add(&msg_tokens);
-		}
-		self.inner.extend(msg_reqs);
-		match self.tokens.checked_add(&tokens) {
-			Some(v) => self.tokens = v,
-			None => {
-				error!("Token overflow");
-			},
-		}
-	}
-
-	fn into_vec(self) -> Vec<L::Request> {
-		self.inner.into()
 	}
 }
