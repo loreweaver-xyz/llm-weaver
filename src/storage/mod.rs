@@ -50,10 +50,13 @@ pub trait TapestryChestHandler<T: Config> {
 		tapestry_id: TID,
 		metadata: M,
 	) -> crate::Result<()>;
-	/// Retrieves the number of instances of a tapestry.
+	/// Retrieves the index of a tapestry.
 	///
 	/// Returns None if the tapestry does not exist.
-	async fn get_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> crate::Result<Option<u16>>;
+	async fn get_instance_index<TID: TapestryId>(
+		&self,
+		tapestry_id: TID,
+	) -> crate::Result<Option<u16>>;
 	/// Retrieves the last tapestry fragment, or a fragment at a specified instance.
 	///
 	/// # Parameters

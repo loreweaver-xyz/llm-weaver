@@ -15,6 +15,7 @@ use crate::{
 /// that needs to prompt LLM and receive a response.
 ///
 /// This is implemented over the [`Config`] trait.
+#[derive(Debug)]
 pub struct Loom<T: Config> {
 	pub chest: T::Chest,
 	_phantom: PhantomData<T>,
@@ -248,7 +249,7 @@ impl<T: Config> Loom<T> {
 	}
 
 	/// Helper method to build a [`ContextMessage`]
-	fn build_context_message(
+	pub fn build_context_message(
 		role: WrapperRole,
 		content: String,
 		account_id: Option<String>,

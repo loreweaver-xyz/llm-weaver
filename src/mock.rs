@@ -35,7 +35,10 @@ impl TapestryChestHandler<MockConfig> for MockChest {
 		Ok(())
 	}
 
-	async fn get_tapestry<TID: TapestryId>(&self, _tapestry_id: TID) -> crate::Result<Option<u16>> {
+	async fn get_instance_index<TID: TapestryId>(
+		&self,
+		_tapestry_id: TID,
+	) -> crate::Result<Option<u16>> {
 		Ok(Some(0))
 	}
 

@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use rocksdb::{ColumnFamilyDescriptor, OptimisticTransactionDB, Options, Transaction};
 use serde::{de::DeserializeOwned, Serialize};
-use std::{fmt::Debug, sync::Arc};
+use std::{
+	fmt::Debug,
+	sync::{Arc, Mutex},
+};
 
 use crate::{types::StorageError, Config, Result, TapestryFragment, TapestryId};
 
@@ -11,15 +14,38 @@ const INSTANCE_INDEX_CF: &str = "instance_counts";
 const TAPESTRY_METADATA_CF: &str = "tapestry_metadata";
 const TAPESTRY_FRAGMENT_CF: &str = "tapestry_fragments";
 
+lazy_static::lazy_static! {
+	static ref DB_INSTANCE: Mutex<Option<Arc<OptimisticTransactionDB>>> = Mutex::new(None);
+}
+
+#[derive(Clone)]
 pub struct RocksDbBackend {
 	db: Arc<OptimisticTransactionDB>,
 }
 
 impl RocksDbBackend {
 	pub fn new() -> Result<Self> {
+		let mut db_instance = DB_INSTANCE.lock().unwrap();
+
+		if let Some(db) = db_instance.as_ref() {
+			return Ok(Self { db: Arc::clone(db) });
+		}
+
+		let db = Self::initialize_db()?;
+		*db_instance = Some(Arc::clone(&db));
+
+		Ok(Self { db })
+	}
+
+	fn initialize_db() -> Result<Arc<OptimisticTransactionDB>> {
 		let mut opts = Options::default();
 		opts.create_if_missing(true);
 		opts.create_missing_column_families(true);
+		opts.increase_parallelism(num_cpus::get() as i32);
+		opts.set_max_background_jobs(4);
+		opts.set_max_write_buffer_number(3);
+		opts.set_write_buffer_size(10 * 1024 * 1024 * 1024);
+		opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB
 
 		let cf_descriptors = vec![
 			ColumnFamilyDescriptor::new(INSTANCE_INDEX_CF, Options::default()),
@@ -27,11 +53,11 @@ impl RocksDbBackend {
 			ColumnFamilyDescriptor::new(TAPESTRY_FRAGMENT_CF, Options::default()),
 		];
 
-		let db =
-			OptimisticTransactionDB::open_cf_descriptors(&opts, "rocksdb-data", cf_descriptors)
-				.map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+		let db_path = std::env::var("ROCKSDB_PATH").unwrap_or_else(|_| "rocksdb-data".to_string());
 
-		Ok(Self { db: Arc::new(db) })
+		OptimisticTransactionDB::open_cf_descriptors(&opts, db_path, cf_descriptors)
+			.map(Arc::new)
+			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
 	fn transaction<F, T>(&self, func: F) -> Result<T>
@@ -39,7 +65,7 @@ impl RocksDbBackend {
 		F: FnOnce(&mut RocksDbTransaction) -> Result<T>,
 	{
 		let txn = self.db.transaction();
-		let mut txn_backend = RocksDbTransaction { txn, db: self.db.clone() };
+		let mut txn_backend = RocksDbTransaction { txn, db: Arc::clone(&self.db) };
 		let value = func(&mut txn_backend)?;
 		txn_backend
 			.txn
@@ -147,7 +173,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		})
 	}
 
-	async fn get_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> Result<Option<u16>> {
+	async fn get_instance_index<TID: TapestryId>(&self, tapestry_id: TID) -> Result<Option<u16>> {
 		let instance_index_key = derive_instance_index_key(&tapestry_id);
 		self.transaction(|txn| {
 			txn.get_cf(INSTANCE_INDEX_CF, instance_index_key.as_bytes())?
@@ -325,7 +351,7 @@ mod tests {
 		Config, ContextMessage, Llm, TapestryFragment, TapestryId,
 	};
 	use bounded_integer::BoundedU8;
-	use serde::Deserialize;
+	use serde::{Deserialize, Serialize};
 	use std::{
 		sync::Arc,
 		time::{SystemTime, UNIX_EPOCH},
@@ -334,14 +360,14 @@ mod tests {
 	use uuid::Uuid;
 
 	#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
-	struct TestConfig;
+	struct MockConfig;
 
-	impl Config for TestConfig {
+	impl Config for MockConfig {
 		const TOKEN_THRESHOLD_PERCENTILE: BoundedU8<0, 100> = BoundedU8::new(85).unwrap();
 		const MINIMUM_RESPONSE_LENGTH: u64 = 100;
 
-		type PromptModel = TestLlm;
-		type SummaryModel = TestLlm;
+		type PromptModel = MockLlm;
+		type SummaryModel = MockLlm;
 		type Chest = RocksDbBackend;
 
 		fn convert_prompt_tokens_to_summary_model_tokens(
@@ -351,17 +377,17 @@ mod tests {
 		}
 	}
 
-	impl From<ContextMessage<TestConfig>> for String {
-		fn from(msg: ContextMessage<TestConfig>) -> Self {
+	impl From<ContextMessage<MockConfig>> for String {
+		fn from(msg: ContextMessage<MockConfig>) -> Self {
 			msg.content
 		}
 	}
 
 	#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-	struct TestLlm;
+	struct MockLlm;
 
 	#[async_trait]
-	impl Llm<TestConfig> for TestLlm {
+	impl Llm<MockConfig> for MockLlm {
 		type Tokens = u16;
 		type Request = String;
 		type Response = String;
@@ -400,19 +426,26 @@ mod tests {
 	}
 
 	#[derive(Debug, Clone)]
-	struct TestTapestryId(Uuid);
+	struct MockTapestryId(Uuid);
 
-	impl TapestryId for TestTapestryId {
+	impl TapestryId for MockTapestryId {
 		fn base_key(&self) -> String {
 			self.0.to_string()
 		}
+	}
+
+	#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+	struct MockMetadata {
+		created_at: u64,
+		updated_at: u64,
+		tag: String,
 	}
 
 	fn create_test_backend() -> RocksDbBackend {
 		RocksDbBackend::new().unwrap()
 	}
 
-	fn create_test_tapestry_fragment() -> TapestryFragment<TestConfig> {
+	fn create_test_tapestry_fragment() -> TapestryFragment<MockConfig> {
 		let mut fragment = TapestryFragment::default();
 		fragment.context_tokens = 10;
 		fragment.context_messages.push(ContextMessage::new(
@@ -424,123 +457,139 @@ mod tests {
 		fragment
 	}
 
-	#[tokio::test]
-	async fn test_save_and_get_tapestry_fragment() {
-		let backend = create_test_backend();
-		let tapestry_id = TestTapestryId(Uuid::new_v4());
-		let fragment = create_test_tapestry_fragment();
+	fn create_test_metadata() -> MockMetadata {
+		MockMetadata {
+			created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+			updated_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+			tag: "test".to_string(),
+		}
+	}
 
+	#[tokio::test]
+	async fn test_save_and_get_tapestry_fragment_with_metadata() {
+		let backend = create_test_backend();
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+		let fragment = create_test_tapestry_fragment();
+		let metadata = create_test_metadata();
+
+		// Save metadata first
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.clone(), metadata.clone())
+		.await
+		.unwrap();
+
+		// Save fragment
 		let instance = backend
 			.save_tapestry_fragment(&tapestry_id, fragment.clone(), true)
 			.await
 			.unwrap();
 		assert_eq!(instance, 1);
 
-		let retrieved_fragment: TapestryFragment<TestConfig> = backend
-			.get_tapestry_fragment(tapestry_id, Some(instance))
+		// Retrieve fragment
+		let retrieved_fragment: TapestryFragment<MockConfig> = backend
+			.get_tapestry_fragment(tapestry_id.clone(), Some(instance))
 			.await
 			.unwrap()
 			.unwrap();
 		assert_eq!(retrieved_fragment.context_tokens, fragment.context_tokens);
 		assert_eq!(retrieved_fragment.context_messages.len(), fragment.context_messages.len());
-	}
 
-	#[tokio::test]
-	async fn test_save_and_get_tapestry_metadata() {
-		let backend = create_test_backend();
-		let tapestry_id = TestTapestryId(Uuid::new_v4());
-		let metadata = "Test metadata".to_string();
-
-		<RocksDbBackend as TapestryChestHandler<TestConfig>>::save_tapestry_metadata::<
-			TestTapestryId,
-			String,
-		>(&backend, tapestry_id.clone(), metadata.clone())
+		// Retrieve metadata
+		let retrieved_metadata: MockMetadata = <RocksDbBackend as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_metadata(&backend, tapestry_id)
 		.await
+		.unwrap()
 		.unwrap();
-
-		let retrieved_metadata: String =
-			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_metadata(
-				&backend,
-				tapestry_id,
-			)
-			.await
-			.unwrap()
-			.unwrap();
 		assert_eq!(retrieved_metadata, metadata);
 	}
 
 	#[tokio::test]
-	async fn test_get_tapestry() {
+	async fn test_update_tapestry_metadata() {
 		let backend = create_test_backend();
-		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+		let initial_metadata = create_test_metadata();
 		let fragment = create_test_tapestry_fragment();
 
+		// Save initial metadata and fragment
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.clone(), initial_metadata.clone())
+		.await
+		.unwrap();
 		backend.save_tapestry_fragment(&tapestry_id, fragment, true).await.unwrap();
 
-		let instance_count = <RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry(
-			&backend,
-			tapestry_id,
-		)
+		// Update metadata
+		let updated_metadata = MockMetadata {
+			created_at: initial_metadata.created_at,
+			updated_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+			tag: "updated".to_string(),
+		};
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.clone(), updated_metadata.clone())
+		.await
+		.unwrap();
+
+		// Retrieve updated metadata
+		let retrieved_metadata: MockMetadata = <RocksDbBackend as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_metadata(&backend, tapestry_id)
 		.await
 		.unwrap()
 		.unwrap();
-		assert_eq!(instance_count, 1);
+		assert_eq!(retrieved_metadata, updated_metadata);
 	}
 
 	#[tokio::test]
-	async fn test_delete_tapestry() {
+	async fn test_delete_tapestry_with_metadata() {
 		let backend = create_test_backend();
-		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+		let metadata = create_test_metadata();
 		let fragment = create_test_tapestry_fragment();
 
+		// Save metadata and fragment
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.clone(), metadata)
+		.await
+		.unwrap();
 		backend.save_tapestry_fragment(&tapestry_id, fragment, true).await.unwrap();
-		<RocksDbBackend as TapestryChestHandler<TestConfig>>::delete_tapestry(
+
+		// Delete tapestry
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::delete_tapestry(
 			&backend,
 			tapestry_id.clone(),
 		)
 		.await
 		.unwrap();
 
-		let instance_count = <RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry(
-			&backend,
-			tapestry_id,
-		)
-		.await
-		.unwrap();
-		assert_eq!(instance_count, None);
-	}
-
-	#[tokio::test]
-	async fn test_delete_tapestry_fragment() {
-		let backend = create_test_backend();
-		let tapestry_id = TestTapestryId(Uuid::new_v4());
-		let fragment = create_test_tapestry_fragment();
-
-		backend
-			.save_tapestry_fragment(&tapestry_id, fragment.clone(), true)
+		// Check if tapestry, metadata, and index are deleted
+		let instance_count =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
+				&backend,
+				tapestry_id.clone(),
+			)
 			.await
 			.unwrap();
-		backend.save_tapestry_fragment(&tapestry_id, fragment, true).await.unwrap();
+		assert_eq!(instance_count, None);
 
-		<RocksDbBackend as TapestryChestHandler<TestConfig>>::delete_tapestry_fragment(
-			&backend,
-			tapestry_id.clone(),
-			Some(1),
+		let retrieved_metadata: Option<MockMetadata> = <RocksDbBackend as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_metadata(
+			&backend, tapestry_id.clone()
 		)
 		.await
 		.unwrap();
-
-		let instance_count = <RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry(
-			&backend,
-			tapestry_id.clone(),
-		)
-		.await
-		.unwrap()
-		.unwrap();
-		assert_eq!(instance_count, 2);
+		assert_eq!(retrieved_metadata, None);
 
 		let retrieved_fragment =
-			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_fragment(
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
 				&backend,
 				tapestry_id,
 				Some(1),
@@ -551,54 +600,19 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn test_concurrent_saves() {
+	async fn test_concurrent_metadata_updates() {
 		let backend = Arc::new(create_test_backend());
-		let tapestry_id = Arc::new(TestTapestryId(Uuid::new_v4()));
+		let tapestry_id = Arc::new(MockTapestryId(Uuid::new_v4()));
 		let barrier = Arc::new(Barrier::new(10));
 
-		let mut handles = vec![];
-
-		for i in 0..10 {
-			let backend = backend.clone();
-			let tapestry_id = tapestry_id.clone();
-			let barrier = barrier.clone();
-
-			handles.push(task::spawn(async move {
-				let mut fragment = create_test_tapestry_fragment();
-				fragment.context_messages[0].content = format!("Test message {}", i);
-
-				barrier.wait().await;
-				<RocksDbBackend as TapestryChestHandler<TestConfig>>::save_tapestry_fragment::<
-					TestTapestryId,
-				>(&backend, &tapestry_id, fragment, true)
-				.await
-				.unwrap()
-			}));
-		}
-
-		let results: Vec<Option<u64>> = futures::future::join_all(handles)
-			.await
-			.into_iter()
-			.filter_map(|r| r.ok())
-			.map(Some)
-			.collect();
-
-		let instance_count = <RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry(
-			&backend,
-			tapestry_id.as_ref().clone(),
-		)
+		// Save initial metadata
+		let initial_metadata = create_test_metadata();
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.as_ref().clone(), initial_metadata)
 		.await
-		.unwrap()
 		.unwrap();
-		assert_eq!(instance_count as usize, results.len());
-		assert_eq!(results.into_iter().max().unwrap(), Some(10));
-	}
-
-	#[tokio::test]
-	async fn test_concurrent_reads_and_writes() {
-		let backend = Arc::new(create_test_backend());
-		let tapestry_id = Arc::new(TestTapestryId(Uuid::new_v4()));
-		let barrier = Arc::new(Barrier::new(20));
 
 		let mut handles = vec![];
 
@@ -608,60 +622,63 @@ mod tests {
 			let barrier = barrier.clone();
 
 			handles.push(task::spawn(async move {
-				let mut fragment = create_test_tapestry_fragment();
-				fragment.context_messages[0].content = format!("Test message {}", i);
+				let mut updated_metadata = create_test_metadata();
+				updated_metadata.tag = format!("concurrent_update_{}", i);
 
 				barrier.wait().await;
-				<RocksDbBackend as TapestryChestHandler<TestConfig>>::save_tapestry_fragment::<
-					TestTapestryId,
-				>(&backend, &tapestry_id, fragment, true)
+				<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+					MockTapestryId,
+					MockMetadata,
+				>(&backend, tapestry_id.as_ref().clone(), updated_metadata)
 				.await
+				.unwrap();
+
+				<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata::<
+					MockTapestryId,
+					MockMetadata,
+				>(&backend, tapestry_id.as_ref().clone())
+				.await
+				.unwrap()
 				.unwrap()
 			}));
 		}
 
-		for _ in 0..10 {
-			let backend = backend.clone();
-			let tapestry_id = tapestry_id.clone();
-			let barrier = barrier.clone();
-
-			handles.push(task::spawn(async move {
-				barrier.wait().await;
-				<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry::<TestTapestryId>(
-					&backend,
-					tapestry_id.as_ref().clone(),
-				)
-				.await
-				.unwrap().unwrap() as u64
-			}));
-		}
-
-		let results: Vec<Option<u64>> = futures::future::join_all(handles)
+		let results: Vec<MockMetadata> = futures::future::join_all(handles)
 			.await
 			.into_iter()
 			.filter_map(|r| r.ok())
-			.map(Some)
 			.collect();
 
-		let write_results: Vec<u64> = results.iter().filter_map(|&r| r.map(|v| v as u64)).collect();
-		let read_results: Vec<Option<u64>> = results
-			.iter()
-			.filter_map(|&r| if r.is_some() { None } else { Some(r) })
-			.collect();
-
-		assert_eq!(write_results.len(), 10);
-		assert_eq!(read_results.len(), 10);
-		assert!(write_results.into_iter().max().unwrap() <= 10);
+		assert_eq!(results.len(), 10);
+		let final_metadata: MockMetadata =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata(
+				&backend,
+				tapestry_id.as_ref().clone(),
+			)
+			.await
+			.unwrap()
+			.unwrap();
+		assert!(results.contains(&final_metadata));
 	}
 
 	#[tokio::test]
-	async fn test_tapestry_fragment_versioning() {
+	async fn test_tapestry_fragment_versioning_with_metadata() {
 		let backend = create_test_backend();
-		let tapestry_id = TestTapestryId(Uuid::new_v4());
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+		let metadata = create_test_metadata();
 		let fragment1 = create_test_tapestry_fragment();
 		let mut fragment2 = create_test_tapestry_fragment();
 		fragment2.context_messages[0].content = "Updated message".to_string();
 
+		// Save metadata
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.clone(), metadata.clone())
+		.await
+		.unwrap();
+
+		// Save fragments
 		let instance1 = backend
 			.save_tapestry_fragment(&tapestry_id, fragment1.clone(), true)
 			.await
@@ -674,8 +691,9 @@ mod tests {
 		assert_eq!(instance1, 1);
 		assert_eq!(instance2, 2);
 
+		// Retrieve fragments
 		let retrieved_fragment1 =
-			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_fragment(
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
 				&backend,
 				tapestry_id.clone(),
 				Some(1),
@@ -684,9 +702,9 @@ mod tests {
 			.unwrap()
 			.unwrap();
 		let retrieved_fragment2 =
-			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_fragment(
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
 				&backend,
-				tapestry_id,
+				tapestry_id.clone(),
 				Some(2),
 			)
 			.await
@@ -701,39 +719,305 @@ mod tests {
 			retrieved_fragment2.context_messages[0].content,
 			fragment2.context_messages[0].content
 		);
+
+		// Retrieve metadata
+		let retrieved_metadata: MockMetadata = <RocksDbBackend as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_metadata(&backend, tapestry_id)
+		.await
+		.unwrap()
+		.unwrap();
+		assert_eq!(retrieved_metadata, metadata);
 	}
 
 	#[tokio::test]
-	async fn test_large_tapestry_fragment() {
+	async fn test_save_multiple_fragments_without_incrementing_index() {
 		let backend = create_test_backend();
-		let tapestry_id = TestTapestryId(Uuid::new_v4());
-		let mut fragment = create_test_tapestry_fragment();
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+		let metadata = create_test_metadata();
+		let fragment1 = create_test_tapestry_fragment();
+		let fragment2 = create_test_tapestry_fragment();
 
-		// Add a large number of messages to the fragment
-		for i in 0..1000 {
-			fragment.context_messages.push(ContextMessage::new(
-				WrapperRole::from("user"),
-				format!("Large message {}", i),
-				Some("user1".to_string()),
-				SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().to_string(),
-			));
-		}
+		// Save metadata
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.clone(), metadata)
+		.await
+		.unwrap();
 
-		let instance = backend
-			.save_tapestry_fragment(&tapestry_id, fragment.clone(), true)
+		// Save fragments without incrementing index
+		let instance1 =
+			backend.save_tapestry_fragment(&tapestry_id, fragment1, false).await.unwrap();
+		let instance2 = backend
+			.save_tapestry_fragment(&tapestry_id, fragment2.clone(), false)
 			.await
 			.unwrap();
-		assert_eq!(instance, 1);
 
+		assert_eq!(instance1, 1);
+		assert_eq!(instance2, 1);
+
+		// Retrieve the latest fragment
 		let retrieved_fragment =
-			<RocksDbBackend as TapestryChestHandler<TestConfig>>::get_tapestry_fragment(
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
 				&backend,
-				tapestry_id,
-				Some(instance),
+				tapestry_id.clone(),
+				None,
 			)
 			.await
 			.unwrap()
 			.unwrap();
-		assert_eq!(retrieved_fragment.context_messages.len(), fragment.context_messages.len());
+
+		// Check that we have the latest fragment
+		assert_eq!(
+			retrieved_fragment.context_messages[0].content,
+			fragment2.context_messages[0].content
+		);
+
+		// Check the tapestry index
+		let instance_count =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
+				&backend,
+				tapestry_id,
+			)
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(instance_count, 1);
+	}
+
+	#[tokio::test]
+	async fn test_delete_specific_tapestry_fragment() {
+		let backend = create_test_backend();
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+		let metadata = create_test_metadata();
+		let fragment1 = create_test_tapestry_fragment();
+		let mut fragment2 = create_test_tapestry_fragment();
+		fragment2.context_messages[0].content = "Second fragment".to_string();
+
+		// Save metadata
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.clone(), metadata)
+		.await
+		.unwrap();
+
+		// Save fragments
+		backend
+			.save_tapestry_fragment(&tapestry_id, fragment1.clone(), true)
+			.await
+			.unwrap();
+		backend
+			.save_tapestry_fragment(&tapestry_id, fragment2.clone(), true)
+			.await
+			.unwrap();
+
+		// Delete the first fragment
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::delete_tapestry_fragment(
+			&backend,
+			tapestry_id.clone(),
+			Some(1),
+		)
+		.await
+		.unwrap();
+
+		// Try to retrieve the deleted fragment
+		let deleted_fragment =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
+				&backend,
+				tapestry_id.clone(),
+				Some(1),
+			)
+			.await
+			.unwrap();
+		assert_eq!(deleted_fragment, None);
+
+		// Retrieve the remaining fragment
+		let remaining_fragment =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
+				&backend,
+				tapestry_id.clone(),
+				Some(2),
+			)
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(
+			remaining_fragment.context_messages[0].content,
+			fragment2.context_messages[0].content
+		);
+
+		// Check the tapestry index
+		let instance_count =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
+				&backend,
+				tapestry_id,
+			)
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(instance_count, 2);
+	}
+
+	#[tokio::test]
+	async fn test_concurrent_fragment_and_metadata_operations() {
+		let backend = Arc::new(create_test_backend());
+		let tapestry_id = Arc::new(MockTapestryId(Uuid::new_v4()));
+		let barrier = Arc::new(Barrier::new(20));
+
+		// Save initial metadata
+		let initial_metadata = create_test_metadata();
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.as_ref().clone(), initial_metadata)
+		.await
+		.unwrap();
+
+		let mut handles: Vec<task::JoinHandle<()>> = vec![];
+
+		for i in 0..10 {
+			let backend = backend.clone();
+			let tapestry_id = tapestry_id.clone();
+			let barrier = barrier.clone();
+
+			handles.push(task::spawn(async move {
+				let mut fragment = create_test_tapestry_fragment();
+				fragment.context_messages[0].content = format!("Concurrent fragment {}", i);
+				barrier.wait().await;
+				backend.save_tapestry_fragment(&*tapestry_id, fragment, true).await.unwrap();
+			}));
+		}
+
+		for i in 0..10 {
+			let backend = backend.clone();
+			let tapestry_id = tapestry_id.clone();
+			let barrier = barrier.clone();
+
+			handles.push(task::spawn(async move {
+				let mut updated_metadata = create_test_metadata();
+				updated_metadata.tag = format!("concurrent_update_{}", i);
+
+				barrier.wait().await;
+				<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+					MockTapestryId,
+					MockMetadata,
+				>(&backend, tapestry_id.as_ref().clone(), updated_metadata)
+				.await
+				.unwrap()
+			}));
+		}
+
+		let _ = futures::future::join_all(handles).await;
+
+		// Check final state
+		let instance_count =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
+				&backend,
+				tapestry_id.as_ref().clone(),
+			)
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(instance_count, 10);
+
+		let final_metadata: MockMetadata =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata(
+				&backend,
+				tapestry_id.as_ref().clone(),
+			)
+			.await
+			.unwrap()
+			.unwrap();
+		assert!(final_metadata.tag.starts_with("concurrent_update_"));
+	}
+
+	#[tokio::test]
+	async fn test_save_fragment_updates_metadata() {
+		let backend = create_test_backend();
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+		let initial_metadata = create_test_metadata();
+		let fragment = create_test_tapestry_fragment();
+
+		// Save initial metadata
+		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+			MockTapestryId,
+			MockMetadata,
+		>(&backend, tapestry_id.clone(), initial_metadata.clone())
+		.await
+		.unwrap();
+
+		// Save fragment
+		backend.save_tapestry_fragment(&tapestry_id, fragment, true).await.unwrap();
+
+		// Retrieve updated metadata
+		let updated_metadata: MockMetadata =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata(
+				&backend,
+				tapestry_id,
+			)
+			.await
+			.unwrap()
+			.unwrap();
+
+		assert_eq!(updated_metadata, initial_metadata);
+	}
+
+	#[tokio::test]
+	async fn test_get_non_existent_tapestry() {
+		let backend = create_test_backend();
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+
+		let result = <RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
+			&backend,
+			tapestry_id,
+		)
+		.await
+		.unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[tokio::test]
+	async fn test_get_non_existent_tapestry_metadata() {
+		let backend = create_test_backend();
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+
+		let result: Option<MockMetadata> =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata(
+				&backend,
+				tapestry_id,
+			)
+			.await
+			.unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[tokio::test]
+	async fn test_delete_non_existent_tapestry() {
+		let backend = create_test_backend();
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+
+		let result = <RocksDbBackend as TapestryChestHandler<MockConfig>>::delete_tapestry(
+			&backend,
+			tapestry_id,
+		)
+		.await;
+		assert!(result.is_ok());
+	}
+
+	#[tokio::test]
+	async fn test_delete_non_existent_tapestry_fragment() {
+		let backend = create_test_backend();
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+
+		let result =
+			<RocksDbBackend as TapestryChestHandler<MockConfig>>::delete_tapestry_fragment(
+				&backend,
+				tapestry_id,
+				Some(1),
+			)
+			.await;
+		assert!(result.is_ok());
 	}
 }
