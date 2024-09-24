@@ -44,7 +44,7 @@ impl RocksDbBackend {
 		opts.increase_parallelism(num_cpus::get() as i32);
 		opts.set_max_background_jobs(4);
 		opts.set_max_write_buffer_number(3);
-		opts.set_write_buffer_size(10 * 1024 * 1024 * 1024);
+		opts.set_write_buffer_size(8 * 1024 * 1024 * 1024);
 		opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB
 
 		let cf_descriptors = vec![
