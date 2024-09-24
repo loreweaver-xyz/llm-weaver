@@ -1,6 +1,4 @@
 <div align="center">
-    <img src="./assets/loom-logo-1024x1024.png" width="60%">
-
 [<img alt="github" src="https://img.shields.io/badge/maintenance%20status-actively%20developed-brightgreen?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/llm-weaver)
 [<img alt="github" src="https://img.shields.io/badge/github-snowmead/llm_weaver-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/snowmead/llm-weaver)
 [<img alt="crates.io" src="https://img.shields.io/crates/v/llm-weaver.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/llm-weaver)
@@ -21,23 +19,3 @@ Once a certain threshold of context tokens is reached, the library will summariz
 ## Usage
 
 Follow the [crate level documentation](https://docs.rs/llm-weaver/latest/llm_weaver/) for a detailed explanation of how to use the library.
-
-## Use Cases
-
-- **Text-Based RPGs:** Crafting coherent and persistently evolving narratives and interactions in text-based role-playing games.
-
-- **Customer Support Chatbots:** Developing chatbots that remember past user interactions and provide personalized support.
-
-- **Educational Virtual Tutors:** Implementing AI tutors that remember student interactions and tailor assistance accordingly.
-
-- **Healthcare Virtual Assistants:** Creating healthcare assistants that provide follow-up advice and reminders based on past user health queries.
-
-- **AI-Driven MMO NPC Interactions:** Enhancing MMO experiences by enabling NPCs to have contextually relevant interactions with players based on past encounters.
-
-## Contribution
-
-If you are passioniate about this project, please feel free to fork the repository and submit pull requests for enhancements, bug fixes, or additional features.
-
-## License
-
-LLM Weaver is distributed under the MIT License, ensuring maximum freedom for using and sharing it in your projects.
