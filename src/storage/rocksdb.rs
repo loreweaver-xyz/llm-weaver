@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use rocksdb::{ColumnFamilyDescriptor, OptimisticTransactionDB, Options, Transaction};
+use rocksdb::{
+	ColumnFamilyDescriptor, DBCompressionType, OptimisticTransactionDB, Options, Transaction,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
 	fmt::Debug,
@@ -44,17 +46,25 @@ impl RocksDbBackend {
 		opts.increase_parallelism(num_cpus::get() as i32);
 		opts.set_max_background_jobs(4);
 		opts.set_max_write_buffer_number(3);
-		opts.set_write_buffer_size(8 * 1024 * 1024 * 1024);
+		opts.set_write_buffer_size(64 * 1024 * 1024); // 64MB
 		opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB
+		opts.set_level_compaction_dynamic_level_bytes(true);
+		opts.set_max_bytes_for_level_base(256 * 1024 * 1024); // 256MB
+		opts.set_bloom_locality(1);
+		opts.set_compression_type(DBCompressionType::Lz4);
+		opts.set_periodic_compaction_seconds(86400); // 24 hours
+
+		let mut cf_opts = Options::default();
+		cf_opts.set_compression_type(DBCompressionType::Lz4);
+		cf_opts.set_bottommost_compression_type(DBCompressionType::Zstd);
 
 		let cf_descriptors = vec![
-			ColumnFamilyDescriptor::new(INSTANCE_INDEX_CF, Options::default()),
-			ColumnFamilyDescriptor::new(TAPESTRY_METADATA_CF, Options::default()),
-			ColumnFamilyDescriptor::new(TAPESTRY_FRAGMENT_CF, Options::default()),
+			ColumnFamilyDescriptor::new(INSTANCE_INDEX_CF, cf_opts.clone()),
+			ColumnFamilyDescriptor::new(TAPESTRY_METADATA_CF, cf_opts.clone()),
+			ColumnFamilyDescriptor::new(TAPESTRY_FRAGMENT_CF, cf_opts),
 		];
 
 		let db_path = std::env::var("ROCKSDB_PATH").unwrap_or_else(|_| "rocksdb-data".to_string());
-
 		OptimisticTransactionDB::open_cf_descriptors(&opts, db_path, cf_descriptors)
 			.map(Arc::new)
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
