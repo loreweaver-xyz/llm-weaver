@@ -77,7 +77,7 @@ use types::{LoomError, SummaryModelTokens, WeaveError};
 
 use crate::types::{PromptModelTokens, WrapperRole};
 
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type Result<T> = std::result::Result<T, LoomError>;
 
 /// Represents a unique identifier for any arbitrary entity.
 ///

@@ -52,10 +52,7 @@ impl<T: Config> Loom<T> {
 		tapestry_id: TID,
 		instructions: String,
 		mut msgs: Vec<ContextMessage<T>>,
-	) -> Result<
-		(<<T as Config>::PromptModel as Llm<T>>::Response, u64, bool),
-		Box<dyn std::error::Error + Send + Sync>,
-	> {
+	) -> Result<(<<T as Config>::PromptModel as Llm<T>>::Response, u64, bool), LoomError> {
 		let instructions_ctx_msg =
 			Self::build_context_message(SYSTEM_ROLE.into(), instructions, None);
 		let instructions_req_msg: PromptModelRequest<T> = instructions_ctx_msg.clone().into();
@@ -211,7 +208,7 @@ impl<T: Config> Loom<T> {
 		summary_model_config: &LlmConfig<T, T::SummaryModel>,
 		tapestry_fragment: &TapestryFragment<T>,
 		summary_max_tokens: SummaryModelTokens<T>,
-	) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+	) -> Result<String, LoomError> {
 		trace!(
 			"Generating summary with max tokens: {:?}, for tapestry fragment: {:?}",
 			summary_max_tokens,

@@ -65,16 +65,7 @@ pub enum LoomError {
 	#[error("Storage error: {0}")]
 	Storage(#[from] StorageError),
 	#[error("Error: {0}")]
-	Error(String),
-}
-
-impl From<Box<dyn std::error::Error + Send + Sync>> for LoomError {
-	fn from(error: Box<dyn std::error::Error + Send + Sync>) -> Self {
-		match error.downcast::<LoomError>() {
-			Ok(loom_error) => *loom_error,
-			Err(error) => LoomError::Error(error.to_string()),
-		}
-	}
+	UnknownError(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +74,10 @@ pub enum WeaveError {
 	MaxCompletionTokensIsZero,
 	#[error("Bad configuration: {0}")]
 	BadConfig(String),
+	#[error("Not enough credits to cover cost")]
+	NotEnoughCredits,
+	#[error("Unknown error: {0}")]
+	Unknown(String),
 }
 
 #[derive(Debug, thiserror::Error)]
