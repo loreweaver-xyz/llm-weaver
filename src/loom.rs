@@ -150,7 +150,9 @@ impl<T: Config> Loom<T> {
 		trace!("Max completion tokens available: {:?}", max_completion_tokens);
 
 		if max_completion_tokens.is_zero() {
-			return Err(LoomError::from(WeaveError::MaxCompletionTokensIsZero).into());
+			return Err(LoomError::from_error(WeaveError::BadConfig(
+				"Invalid configuration".to_string(),
+			)))
 		}
 
 		trace!("Prompting LLM with request messages");

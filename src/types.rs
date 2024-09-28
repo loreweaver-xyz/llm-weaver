@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, error::Error};
 
 use async_openai::types::Role;
 use num_traits::{CheckedAdd, FromPrimitive, SaturatingAdd};
@@ -60,12 +60,23 @@ impl From<WrapperRole> for String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoomError {
-	#[error("Weave error: {0}")]
-	Weave(#[from] WeaveError),
+	#[error("LLM error: {0}")]
+	Llm(#[from] Box<dyn Error + Send + Sync>),
 	#[error("Storage error: {0}")]
 	Storage(#[from] StorageError),
-	#[error("Error: {0}")]
+	#[error("Unknown error: {0}")]
 	UnknownError(String),
+	#[error("Max completion tokens is zero")]
+	MaxCompletionTokensZero,
+}
+
+impl LoomError {
+	pub fn from_error<E>(error: E) -> Self
+	where
+		E: Error + Send + Sync + 'static,
+	{
+		LoomError::Llm(Box::new(error))
+	}
 }
 
 #[derive(Debug, thiserror::Error)]

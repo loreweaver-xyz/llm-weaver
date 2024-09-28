@@ -110,7 +110,7 @@ impl Llm<MockConfig> for MockLlm {
 		let tokens = bpe.encode_with_special_tokens(&content.to_string());
 
 		tokens.len().try_into().map_err(|_| {
-			LoomError::from(WeaveError::BadConfig(format!(
+			LoomError::from_error(WeaveError::BadConfig(format!(
 				"Number of tokens exceeds max tokens for model: {}",
 				content
 			)))

@@ -10,7 +10,10 @@ use super::*;
 
 #[cfg(test)]
 mod vec_prompt_msgs_deque {
+	use std::fmt;
+
 	use super::*;
+	use thiserror::Error;
 
 	#[tokio::test]
 	async fn prompt() {
@@ -149,5 +152,50 @@ mod vec_prompt_msgs_deque {
 		assert_eq!(vec.len(), 2);
 		assert_eq!(vec[0], request1);
 		assert_eq!(vec[1], request2);
+	}
+
+	// Custom error type defined by the user
+	#[derive(Debug, thiserror::Error)]
+	enum MyCustomError {
+		#[error("Bad configuration: {0}")]
+		BadConfig(String),
+	}
+
+	#[test]
+	fn test_custom_error_in_loom_error() {
+		// Create a function that returns Result with LoomError
+		fn process_data() -> Result<()> {
+			// Simulate an error condition
+			if true {
+				return Err(LoomError::from_error(MyCustomError::BadConfig(
+					"Something went wrong".to_string(),
+				)));
+			}
+			Ok(())
+		}
+
+		// Test the function
+		let result = process_data();
+		assert!(result.is_err());
+
+		if let Err(error) = result {
+			match error {
+				LoomError::Llm(boxed_error) => {
+					// Downcast the boxed error to MyCustomError
+					if let Some(custom_error) = boxed_error.downcast_ref::<MyCustomError>() {
+						match custom_error {
+							MyCustomError::BadConfig(msg) =>
+								assert_eq!(msg, "Something went wrong"),
+							_ => panic!("Expected BadConfig error"),
+						}
+					} else {
+						panic!("Expected MyCustomError");
+					}
+				},
+				_ => panic!("Expected LoomError::Llm"),
+			}
+		} else {
+			panic!("Expected an error");
+		}
 	}
 }
