@@ -66,8 +66,6 @@ pub enum LoomError {
 	Storage(#[from] StorageError),
 	#[error("Unknown error: {0}")]
 	UnknownError(String),
-	#[error("Max completion tokens is zero")]
-	MaxCompletionTokensZero,
 }
 
 impl LoomError {
