@@ -81,7 +81,7 @@ impl LoomError {
 	///
 	/// # Returns
 	///
-	/// Returns a `LoomError::Llm` variant containing the boxed input error.
+	/// Returns a [LoomError::Llm] variant containing the boxed input error.
 	///
 	/// # Example
 	///
