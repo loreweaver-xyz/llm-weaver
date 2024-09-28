@@ -69,6 +69,33 @@ pub enum LoomError {
 }
 
 impl LoomError {
+	/// Wraps any error type that implements `std::error::Error + Send + Sync + 'static` into a
+	/// `LoomError::Llm` variant.
+	///
+	/// This function provides a convenient way to convert custom error types into `LoomError`,
+	/// allowing for unified error handling within the Loom framework.
+	///
+	/// # Arguments
+	///
+	/// * `error` - Any error type that implements `std::error::Error + Send + Sync + 'static`.
+	///
+	/// # Returns
+	///
+	/// Returns a `LoomError::Llm` variant containing the boxed input error.
+	///
+	/// # Examples
+	///
+	/// ```ignore
+	/// use your_crate::{LoomError, MyCustomError};
+	///
+	/// let custom_error = MyCustomError::SomeVariant;
+	/// let loom_error = LoomError::from_error(custom_error);
+	/// ```
+	///
+	/// # Type Parameters
+	///
+	/// * `E`: The type of the error being wrapped. It must implement `std::error::Error + Send +
+	///   Sync + 'static`.
 	pub fn from_error<E>(error: E) -> Self
 	where
 		E: Error + Send + Sync + 'static,

@@ -156,8 +156,6 @@ mod vec_prompt_msgs_deque {
 	enum MyCustomError {
 		#[error("Bad configuration: {0}")]
 		BadConfig(String),
-		#[error("There is nothing to see here.")]
-		HiddenAssassin,
 	}
 
 	#[test]
@@ -185,7 +183,6 @@ mod vec_prompt_msgs_deque {
 						match custom_error {
 							MyCustomError::BadConfig(msg) =>
 								assert_eq!(msg, "Something went wrong"),
-							&MyCustomError::HiddenAssassin => todo!(),
 						}
 					} else {
 						panic!("Expected MyCustomError");
