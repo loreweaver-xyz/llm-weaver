@@ -86,7 +86,8 @@ impl LoomError {
 	/// # Example
 	///
 	/// ```ignore
-	/// use your_crate::{LoomError, MyCustomError};
+	/// use llm_weaver::LoomError;
+	/// use your_crate::MyCustomError;
 	///
 	/// let custom_error = MyCustomError::SomeVariant;
 	/// let loom_error = LoomError::from_error(custom_error);
