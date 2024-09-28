@@ -10,10 +10,7 @@ use super::*;
 
 #[cfg(test)]
 mod vec_prompt_msgs_deque {
-	use std::fmt;
-
 	use super::*;
-	use thiserror::Error;
 
 	#[tokio::test]
 	async fn prompt() {
@@ -167,6 +164,12 @@ mod vec_prompt_msgs_deque {
 		fn process_data() -> Result<()> {
 			// Simulate an error condition
 			if true {
+				println!(
+					"{:?}",
+					LoomError::from_error(MyCustomError::BadConfig(
+						"Something went wrong".to_string(),
+					))
+				);
 				return Err(LoomError::from_error(MyCustomError::BadConfig(
 					"Something went wrong".to_string(),
 				)));
@@ -186,7 +189,6 @@ mod vec_prompt_msgs_deque {
 						match custom_error {
 							MyCustomError::BadConfig(msg) =>
 								assert_eq!(msg, "Something went wrong"),
-							_ => panic!("Expected BadConfig error"),
 						}
 					} else {
 						panic!("Expected MyCustomError");
