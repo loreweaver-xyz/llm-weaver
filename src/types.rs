@@ -83,7 +83,7 @@ impl LoomError {
 	///
 	/// Returns a `LoomError::Llm` variant containing the boxed input error.
 	///
-	/// # Examples
+	/// # Example
 	///
 	/// ```ignore
 	/// use your_crate::{LoomError, MyCustomError};
