@@ -459,10 +459,7 @@ mod tests {
 	}
 
 	#[derive(Debug, Clone, thiserror::Error)]
-	pub enum MockPromptError {
-		#[error("Bad configuration: {0}")]
-		BadConfig(String),
-	}
+	pub enum MockPromptError {}
 
 	fn create_test_backend() -> RocksDbBackend<MockConfig> {
 		RocksDbBackend::new().unwrap()
@@ -717,13 +714,17 @@ mod tests {
 		// Retrieve fragments
 		let retrieved_fragment1 = <RocksDbBackend<MockConfig> as TapestryChestHandler<
 			MockConfig,
-		>>::get_tapestry_fragment(&backend, tapestry_id.clone(), Some(1))
+		>>::get_tapestry_fragment(
+			&backend, tapestry_id.clone(), Some(1)
+		)
 		.await
 		.unwrap()
 		.unwrap();
 		let retrieved_fragment2 = <RocksDbBackend<MockConfig> as TapestryChestHandler<
 			MockConfig,
-		>>::get_tapestry_fragment(&backend, tapestry_id.clone(), Some(2))
+		>>::get_tapestry_fragment(
+			&backend, tapestry_id.clone(), Some(2)
+		)
 		.await
 		.unwrap()
 		.unwrap();
