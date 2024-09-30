@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, error::Error};
+use std::collections::VecDeque;
 
 use async_openai::types::Role;
 use num_traits::{CheckedAdd, FromPrimitive, SaturatingAdd};

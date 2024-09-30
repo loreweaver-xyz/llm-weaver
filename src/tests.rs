@@ -2,7 +2,7 @@ use async_openai::types::Role;
 
 use crate::{
 	loom::Loom,
-	mock::{MockConfig, MockLlm, MockLlmRequest, MockPromptError, MockTapestryId},
+	mock::{MockConfig, MockLlm, MockLlmRequest, MockTapestryId},
 	types::VecPromptMsgsDeque,
 };
 
@@ -149,26 +149,5 @@ mod vec_prompt_msgs_deque {
 		assert_eq!(vec.len(), 2);
 		assert_eq!(vec[0], request1);
 		assert_eq!(vec[1], request2);
-	}
-
-	// Custom error type defined by the user
-	#[derive(Debug, thiserror::Error)]
-	enum MyCustomError {
-		#[error("Bad configuration: {0}")]
-		BadConfig(String),
-	}
-
-	#[test]
-	fn test_custom_error_in_loom_error() {
-		// Create a function that returns Result with LoomError
-		fn process_data() -> Result<(), MockConfig> {
-			// Simulate an error condition
-			if true {
-				return Err(LoomError::Llm(MockPromptError::BadConfig(
-					"Something went wrong".to_string(),
-				)));
-			}
-			Ok(())
-		}
 	}
 }
