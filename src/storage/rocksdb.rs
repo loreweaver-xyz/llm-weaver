@@ -21,25 +21,26 @@ lazy_static::lazy_static! {
 }
 
 #[derive(Clone)]
-pub struct RocksDbBackend {
+pub struct RocksDbBackend<T: Config> {
 	db: Arc<OptimisticTransactionDB>,
+	phantom: std::marker::PhantomData<T>,
 }
 
-impl RocksDbBackend {
-	pub fn new() -> Result<Self> {
+impl<T: Config> RocksDbBackend<T> {
+	pub fn new() -> Result<Self, T> {
 		let mut db_instance = DB_INSTANCE.lock().unwrap();
 
 		if let Some(db) = db_instance.as_ref() {
-			return Ok(Self { db: Arc::clone(db) });
+			return Ok(Self { db: Arc::clone(db), phantom: std::marker::PhantomData });
 		}
 
 		let db = Self::initialize_db()?;
 		*db_instance = Some(Arc::clone(&db));
 
-		Ok(Self { db })
+		Ok(Self { db, phantom: std::marker::PhantomData })
 	}
 
-	fn initialize_db() -> Result<Arc<OptimisticTransactionDB>> {
+	fn initialize_db() -> Result<Arc<OptimisticTransactionDB>, T> {
 		let mut opts = Options::default();
 		opts.create_if_missing(true);
 		opts.create_missing_column_families(true);
@@ -70,12 +71,13 @@ impl RocksDbBackend {
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	fn transaction<F, T>(&self, func: F) -> Result<T>
+	fn transaction<F>(&self, func: F) -> Result<Self, T>
 	where
-		F: FnOnce(&mut RocksDbTransaction) -> Result<T>,
+		F: FnOnce(&mut RocksDbTransaction<T>) -> Result<Self, T>,
 	{
 		let txn = self.db.transaction();
-		let mut txn_backend = RocksDbTransaction { txn, db: Arc::clone(&self.db) };
+		let mut txn_backend =
+			RocksDbTransaction { txn, db: Arc::clone(&self.db), phantom: std::marker::PhantomData };
 		let value = func(&mut txn_backend)?;
 		txn_backend
 			.txn
@@ -85,13 +87,14 @@ impl RocksDbBackend {
 	}
 }
 
-struct RocksDbTransaction<'a> {
+struct RocksDbTransaction<'a, T: Config> {
 	txn: Transaction<'a, OptimisticTransactionDB>,
 	db: Arc<OptimisticTransactionDB>,
+	phantom: std::marker::PhantomData<T>,
 }
 
-impl<'a> RocksDbTransaction<'a> {
-	fn get_cf(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+impl<'a, T: Config> RocksDbTransaction<'a, T> {
+	fn get_cf(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, T> {
 		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
 			StorageError::DatabaseError(format!("Column family not found: {}", cf))
 		})?;
@@ -100,7 +103,7 @@ impl<'a> RocksDbTransaction<'a> {
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	fn put_cf(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
+	fn put_cf(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), T> {
 		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
 			StorageError::DatabaseError(format!("Column family not found: {}", cf))
 		})?;
@@ -109,7 +112,7 @@ impl<'a> RocksDbTransaction<'a> {
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	fn delete_cf(&self, cf: &str, key: &[u8]) -> Result<()> {
+	fn delete_cf(&self, cf: &str, key: &[u8]) -> Result<(), T> {
 		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
 			StorageError::DatabaseError(format!("Column family not found: {}", cf))
 		})?;
@@ -121,7 +124,7 @@ impl<'a> RocksDbTransaction<'a> {
 
 #[async_trait]
 impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandler<T>
-	for RocksDbBackend
+	for RocksDbBackend<T>
 {
 	type Error = StorageError;
 
@@ -134,7 +137,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		tapestry_id: &TID,
 		tapestry_fragment: TapestryFragment<T>,
 		increment_index: bool,
-	) -> Result<u64> {
+	) -> Result<u64, T> {
 		let fragment_bytes = serde_json::to_vec(&tapestry_fragment)
 			.map_err(|e| StorageError::SerializationError(e.to_string()))?;
 
@@ -173,7 +176,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		&self,
 		tapestry_id: TID,
 		metadata: M,
-	) -> Result<()> {
+	) -> Result<(), T> {
 		let metadata_bytes = serde_json::to_vec(&metadata)
 			.map_err(|e| StorageError::SerializationError(e.to_string()))?;
 
@@ -204,7 +207,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		&self,
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> Result<Option<TapestryFragment<T>>> {
+	) -> Result<Option<TapestryFragment<T>>, T> {
 		self.transaction(|txn| {
 			let instance = if let Some(i) = instance {
 				i
@@ -233,7 +236,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Send + Sync>(
 		&self,
 		tapestry_id: TID,
-	) -> Result<Option<M>> {
+	) -> Result<Option<M>, T> {
 		let metadata_key = derive_metadata_key(&tapestry_id);
 		self.transaction(|txn| {
 			txn.get_cf(TAPESTRY_METADATA_CF, metadata_key.as_bytes())?

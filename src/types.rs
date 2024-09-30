@@ -59,62 +59,17 @@ impl From<WrapperRole> for String {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum LoomError {
-	#[error("LLM error: {0}")]
-	Llm(#[from] Box<dyn Error + Send + Sync>),
+pub enum LoomError<T: Config> {
+	#[error(transparent)]
+	Llm(<T::PromptModel as Llm<T>>::PromptError),
 	#[error("Storage error: {0}")]
 	Storage(#[from] StorageError),
-	#[error("Unknown error: {0}")]
-	UnknownError(String),
-}
-
-impl LoomError {
-	/// Wraps any error type that implements `std::error::Error + Send + Sync + 'static` into a
-	/// `LoomError::Llm` variant.
-	///
-	/// This function provides a convenient way to convert custom error types into `LoomError`,
-	/// allowing for unified error handling within the Loom framework.
-	///
-	/// # Arguments
-	///
-	/// * `error` - Any error type that implements `std::error::Error + Send + Sync + 'static`.
-	///
-	/// # Returns
-	///
-	/// Returns a [LoomError::Llm] variant containing the boxed input error.
-	///
-	/// # Example
-	///
-	/// ```ignore
-	/// use llm_weaver::LoomError;
-	/// use your_crate::MyCustomError;
-	///
-	/// let custom_error = MyCustomError::SomeVariant;
-	/// let loom_error = LoomError::from_error(custom_error);
-	/// ```
-	///
-	/// # Type Parameters
-	///
-	/// * `E`: The type of the error being wrapped. It must implement `std::error::Error + Send +
-	///   Sync + 'static`.
-	pub fn from_error<E>(error: E) -> Self
-	where
-		E: Error + Send + Sync + 'static,
-	{
-		LoomError::Llm(Box::new(error))
-	}
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum WeaveError {
-	#[error("Exceeds max prompt tokens")]
-	MaxCompletionTokensIsZero,
 	#[error("Bad configuration: {0}")]
 	BadConfig(String),
-	#[error("Not enough credits to cover cost")]
-	NotEnoughCredits,
+	#[error("Exceeds max prompt tokens")]
+	MaxCompletionTokensIsZero,
 	#[error("Unknown error: {0}")]
-	Unknown(String),
+	UnknownError(String),
 }
 
 #[derive(Debug, thiserror::Error)]

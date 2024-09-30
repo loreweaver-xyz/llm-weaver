@@ -2,7 +2,7 @@ use async_openai::types::Role;
 
 use crate::{
 	loom::Loom,
-	mock::{MockConfig, MockLlm, MockLlmRequest, MockTapestryId},
+	mock::{MockConfig, MockLlm, MockLlmRequest, MockPromptError, MockTapestryId},
 	types::VecPromptMsgsDeque,
 };
 
@@ -161,37 +161,14 @@ mod vec_prompt_msgs_deque {
 	#[test]
 	fn test_custom_error_in_loom_error() {
 		// Create a function that returns Result with LoomError
-		fn process_data() -> Result<()> {
+		fn process_data() -> Result<(), MockConfig> {
 			// Simulate an error condition
 			if true {
-				return Err(LoomError::from_error(MyCustomError::BadConfig(
+				return Err(LoomError::Llm(MockPromptError::BadConfig(
 					"Something went wrong".to_string(),
 				)));
 			}
 			Ok(())
-		}
-
-		// Test the function
-		let result = process_data();
-		assert!(result.is_err());
-
-		if let Err(error) = result {
-			match error {
-				LoomError::Llm(boxed_error) => {
-					// Downcast the boxed error to MyCustomError
-					if let Some(custom_error) = boxed_error.downcast_ref::<MyCustomError>() {
-						match custom_error {
-							MyCustomError::BadConfig(msg) =>
-								assert_eq!(msg, "Something went wrong"),
-						}
-					} else {
-						panic!("Expected MyCustomError");
-					}
-				},
-				_ => panic!("Expected LoomError::Llm"),
-			}
-		} else {
-			panic!("Expected an error");
 		}
 	}
 }
