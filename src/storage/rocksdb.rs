@@ -21,25 +21,26 @@ lazy_static::lazy_static! {
 }
 
 #[derive(Clone)]
-pub struct RocksDbBackend {
+pub struct RocksDbBackend<T: Config> {
 	db: Arc<OptimisticTransactionDB>,
+	phantom: std::marker::PhantomData<T>,
 }
 
-impl RocksDbBackend {
-	pub fn new() -> Result<Self> {
+impl<T: Config> RocksDbBackend<T> {
+	pub fn new() -> Result<Self, T> {
 		let mut db_instance = DB_INSTANCE.lock().unwrap();
 
 		if let Some(db) = db_instance.as_ref() {
-			return Ok(Self { db: Arc::clone(db) });
+			return Ok(Self { db: Arc::clone(db), phantom: std::marker::PhantomData });
 		}
 
 		let db = Self::initialize_db()?;
 		*db_instance = Some(Arc::clone(&db));
 
-		Ok(Self { db })
+		Ok(Self { db, phantom: std::marker::PhantomData })
 	}
 
-	fn initialize_db() -> Result<Arc<OptimisticTransactionDB>> {
+	fn initialize_db() -> Result<Arc<OptimisticTransactionDB>, T> {
 		let mut opts = Options::default();
 		opts.create_if_missing(true);
 		opts.create_missing_column_families(true);
@@ -70,12 +71,13 @@ impl RocksDbBackend {
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	fn transaction<F, T>(&self, func: F) -> Result<T>
+	fn transaction<F, R>(&self, func: F) -> Result<R, T>
 	where
-		F: FnOnce(&mut RocksDbTransaction) -> Result<T>,
+		F: FnOnce(&mut RocksDbTransaction<T>) -> Result<R, T>,
 	{
 		let txn = self.db.transaction();
-		let mut txn_backend = RocksDbTransaction { txn, db: Arc::clone(&self.db) };
+		let mut txn_backend =
+			RocksDbTransaction { txn, db: Arc::clone(&self.db), phantom: std::marker::PhantomData };
 		let value = func(&mut txn_backend)?;
 		txn_backend
 			.txn
@@ -85,13 +87,14 @@ impl RocksDbBackend {
 	}
 }
 
-struct RocksDbTransaction<'a> {
+struct RocksDbTransaction<'a, T: Config> {
 	txn: Transaction<'a, OptimisticTransactionDB>,
 	db: Arc<OptimisticTransactionDB>,
+	phantom: std::marker::PhantomData<T>,
 }
 
-impl<'a> RocksDbTransaction<'a> {
-	fn get_cf(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+impl<'a, T: Config> RocksDbTransaction<'a, T> {
+	fn get_cf(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, T> {
 		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
 			StorageError::DatabaseError(format!("Column family not found: {}", cf))
 		})?;
@@ -100,7 +103,7 @@ impl<'a> RocksDbTransaction<'a> {
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	fn put_cf(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
+	fn put_cf(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), T> {
 		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
 			StorageError::DatabaseError(format!("Column family not found: {}", cf))
 		})?;
@@ -109,7 +112,7 @@ impl<'a> RocksDbTransaction<'a> {
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	fn delete_cf(&self, cf: &str, key: &[u8]) -> Result<()> {
+	fn delete_cf(&self, cf: &str, key: &[u8]) -> Result<(), T> {
 		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
 			StorageError::DatabaseError(format!("Column family not found: {}", cf))
 		})?;
@@ -121,7 +124,7 @@ impl<'a> RocksDbTransaction<'a> {
 
 #[async_trait]
 impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandler<T>
-	for RocksDbBackend
+	for RocksDbBackend<T>
 {
 	type Error = StorageError;
 
@@ -134,7 +137,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		tapestry_id: &TID,
 		tapestry_fragment: TapestryFragment<T>,
 		increment_index: bool,
-	) -> Result<u64> {
+	) -> Result<u64, T> {
 		let fragment_bytes = serde_json::to_vec(&tapestry_fragment)
 			.map_err(|e| StorageError::SerializationError(e.to_string()))?;
 
@@ -173,7 +176,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		&self,
 		tapestry_id: TID,
 		metadata: M,
-	) -> Result<()> {
+	) -> Result<(), T> {
 		let metadata_bytes = serde_json::to_vec(&metadata)
 			.map_err(|e| StorageError::SerializationError(e.to_string()))?;
 
@@ -183,7 +186,10 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		})
 	}
 
-	async fn get_instance_index<TID: TapestryId>(&self, tapestry_id: TID) -> Result<Option<u16>> {
+	async fn get_instance_index<TID: TapestryId>(
+		&self,
+		tapestry_id: TID,
+	) -> Result<Option<u16>, T> {
 		let instance_index_key = derive_instance_index_key(&tapestry_id);
 		self.transaction(|txn| {
 			txn.get_cf(INSTANCE_INDEX_CF, instance_index_key.as_bytes())?
@@ -204,7 +210,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		&self,
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> Result<Option<TapestryFragment<T>>> {
+	) -> Result<Option<TapestryFragment<T>>, T> {
 		self.transaction(|txn| {
 			let instance = if let Some(i) = instance {
 				i
@@ -233,7 +239,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Send + Sync>(
 		&self,
 		tapestry_id: TID,
-	) -> Result<Option<M>> {
+	) -> Result<Option<M>, T> {
 		let metadata_key = derive_metadata_key(&tapestry_id);
 		self.transaction(|txn| {
 			txn.get_cf(TAPESTRY_METADATA_CF, metadata_key.as_bytes())?
@@ -246,7 +252,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		})
 	}
 
-	async fn delete_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> Result<()> {
+	async fn delete_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> Result<(), T> {
 		self.transaction(|txn| {
 			let instance_index_key = derive_instance_index_key(&tapestry_id);
 			let current_index: u64 = txn
@@ -283,7 +289,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		&self,
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> Result<()> {
+	) -> Result<(), T> {
 		self.transaction(|txn| {
 			let instance_index_key = derive_instance_index_key(&tapestry_id);
 			let current_index: u64 = txn
@@ -378,7 +384,7 @@ mod tests {
 
 		type PromptModel = MockLlm;
 		type SummaryModel = MockLlm;
-		type Chest = RocksDbBackend;
+		type Chest = RocksDbBackend<MockConfig>;
 
 		fn convert_prompt_tokens_to_summary_model_tokens(
 			tokens: PromptModelTokens<Self>,
@@ -402,6 +408,7 @@ mod tests {
 		type Request = String;
 		type Response = String;
 		type Parameters = ();
+		type PromptError = MockPromptError;
 
 		fn max_context_length(&self) -> Self::Tokens {
 			1000
@@ -415,7 +422,7 @@ mod tests {
 			"TestLlm"
 		}
 
-		fn count_tokens(content: &str) -> Result<Self::Tokens> {
+		fn count_tokens(content: &str) -> Result<Self::Tokens, MockConfig> {
 			Ok(content.len() as u16)
 		}
 
@@ -426,7 +433,7 @@ mod tests {
 			msgs: Vec<Self::Request>,
 			_params: &Self::Parameters,
 			_max_tokens: Self::Tokens,
-		) -> Result<Self::Response> {
+		) -> Result<Self::Response, MockConfig> {
 			Ok(msgs.join(" "))
 		}
 
@@ -451,7 +458,13 @@ mod tests {
 		tag: String,
 	}
 
-	fn create_test_backend() -> RocksDbBackend {
+	#[derive(Debug, Clone, thiserror::Error)]
+	pub enum MockPromptError {
+		#[error("Bad configuration: {0}")]
+		BadConfig(String),
+	}
+
+	fn create_test_backend() -> RocksDbBackend<MockConfig> {
 		RocksDbBackend::new().unwrap()
 	}
 
@@ -483,7 +496,7 @@ mod tests {
 		let metadata = create_test_metadata();
 
 		// Save metadata first
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.clone(), metadata.clone())
@@ -507,7 +520,7 @@ mod tests {
 		assert_eq!(retrieved_fragment.context_messages.len(), fragment.context_messages.len());
 
 		// Retrieve metadata
-		let retrieved_metadata: MockMetadata = <RocksDbBackend as TapestryChestHandler<
+		let retrieved_metadata: MockMetadata = <RocksDbBackend<MockConfig> as TapestryChestHandler<
 			MockConfig,
 		>>::get_tapestry_metadata(&backend, tapestry_id)
 		.await
@@ -524,7 +537,7 @@ mod tests {
 		let fragment = create_test_tapestry_fragment();
 
 		// Save initial metadata and fragment
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.clone(), initial_metadata.clone())
@@ -538,7 +551,7 @@ mod tests {
 			updated_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
 			tag: "updated".to_string(),
 		};
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.clone(), updated_metadata.clone())
@@ -546,7 +559,7 @@ mod tests {
 		.unwrap();
 
 		// Retrieve updated metadata
-		let retrieved_metadata: MockMetadata = <RocksDbBackend as TapestryChestHandler<
+		let retrieved_metadata: MockMetadata = <RocksDbBackend<MockConfig> as TapestryChestHandler<
 			MockConfig,
 		>>::get_tapestry_metadata(&backend, tapestry_id)
 		.await
@@ -563,7 +576,7 @@ mod tests {
 		let fragment = create_test_tapestry_fragment();
 
 		// Save metadata and fragment
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.clone(), metadata)
@@ -572,7 +585,7 @@ mod tests {
 		backend.save_tapestry_fragment(&tapestry_id, fragment, true).await.unwrap();
 
 		// Delete tapestry
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::delete_tapestry(
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::delete_tapestry(
 			&backend,
 			tapestry_id.clone(),
 		)
@@ -581,7 +594,7 @@ mod tests {
 
 		// Check if tapestry, metadata, and index are deleted
 		let instance_count =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_instance_index(
 				&backend,
 				tapestry_id.clone(),
 			)
@@ -589,7 +602,7 @@ mod tests {
 			.unwrap();
 		assert_eq!(instance_count, None);
 
-		let retrieved_metadata: Option<MockMetadata> = <RocksDbBackend as TapestryChestHandler<
+		let retrieved_metadata: Option<MockMetadata> = <RocksDbBackend<MockConfig> as TapestryChestHandler<
 			MockConfig,
 		>>::get_tapestry_metadata(
 			&backend, tapestry_id.clone()
@@ -599,7 +612,7 @@ mod tests {
 		assert_eq!(retrieved_metadata, None);
 
 		let retrieved_fragment =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
 				&backend,
 				tapestry_id,
 				Some(1),
@@ -617,7 +630,7 @@ mod tests {
 
 		// Save initial metadata
 		let initial_metadata = create_test_metadata();
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.as_ref().clone(), initial_metadata)
@@ -636,14 +649,14 @@ mod tests {
 				updated_metadata.tag = format!("concurrent_update_{}", i);
 
 				barrier.wait().await;
-				<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+				<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 					MockTapestryId,
 					MockMetadata,
 				>(&backend, tapestry_id.as_ref().clone(), updated_metadata)
 				.await
 				.unwrap();
 
-				<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata::<
+				<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_tapestry_metadata::<
 					MockTapestryId,
 					MockMetadata,
 				>(&backend, tapestry_id.as_ref().clone())
@@ -660,14 +673,14 @@ mod tests {
 			.collect();
 
 		assert_eq!(results.len(), 10);
-		let final_metadata: MockMetadata =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata(
-				&backend,
-				tapestry_id.as_ref().clone(),
-			)
-			.await
-			.unwrap()
-			.unwrap();
+		let final_metadata: MockMetadata = <RocksDbBackend<MockConfig> as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_metadata(
+			&backend, tapestry_id.as_ref().clone()
+		)
+		.await
+		.unwrap()
+		.unwrap();
 		assert!(results.contains(&final_metadata));
 	}
 
@@ -681,7 +694,7 @@ mod tests {
 		fragment2.context_messages[0].content = "Updated message".to_string();
 
 		// Save metadata
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.clone(), metadata.clone())
@@ -702,24 +715,18 @@ mod tests {
 		assert_eq!(instance2, 2);
 
 		// Retrieve fragments
-		let retrieved_fragment1 =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
-				&backend,
-				tapestry_id.clone(),
-				Some(1),
-			)
-			.await
-			.unwrap()
-			.unwrap();
-		let retrieved_fragment2 =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
-				&backend,
-				tapestry_id.clone(),
-				Some(2),
-			)
-			.await
-			.unwrap()
-			.unwrap();
+		let retrieved_fragment1 = <RocksDbBackend<MockConfig> as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_fragment(&backend, tapestry_id.clone(), Some(1))
+		.await
+		.unwrap()
+		.unwrap();
+		let retrieved_fragment2 = <RocksDbBackend<MockConfig> as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_fragment(&backend, tapestry_id.clone(), Some(2))
+		.await
+		.unwrap()
+		.unwrap();
 
 		assert_eq!(
 			retrieved_fragment1.context_messages[0].content,
@@ -731,7 +738,7 @@ mod tests {
 		);
 
 		// Retrieve metadata
-		let retrieved_metadata: MockMetadata = <RocksDbBackend as TapestryChestHandler<
+		let retrieved_metadata: MockMetadata = <RocksDbBackend<MockConfig> as TapestryChestHandler<
 			MockConfig,
 		>>::get_tapestry_metadata(&backend, tapestry_id)
 		.await
@@ -749,7 +756,7 @@ mod tests {
 		let fragment2 = create_test_tapestry_fragment();
 
 		// Save metadata
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.clone(), metadata)
@@ -769,7 +776,7 @@ mod tests {
 
 		// Retrieve the latest fragment
 		let retrieved_fragment =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
 				&backend,
 				tapestry_id.clone(),
 				None,
@@ -786,7 +793,7 @@ mod tests {
 
 		// Check the tapestry index
 		let instance_count =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_instance_index(
 				&backend,
 				tapestry_id,
 			)
@@ -806,7 +813,7 @@ mod tests {
 		fragment2.context_messages[0].content = "Second fragment".to_string();
 
 		// Save metadata
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.clone(), metadata)
@@ -824,7 +831,7 @@ mod tests {
 			.unwrap();
 
 		// Delete the first fragment
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::delete_tapestry_fragment(
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::delete_tapestry_fragment(
 			&backend,
 			tapestry_id.clone(),
 			Some(1),
@@ -834,7 +841,7 @@ mod tests {
 
 		// Try to retrieve the deleted fragment
 		let deleted_fragment =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
 				&backend,
 				tapestry_id.clone(),
 				Some(1),
@@ -845,7 +852,7 @@ mod tests {
 
 		// Retrieve the remaining fragment
 		let remaining_fragment =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_tapestry_fragment(
 				&backend,
 				tapestry_id.clone(),
 				Some(2),
@@ -860,7 +867,7 @@ mod tests {
 
 		// Check the tapestry index
 		let instance_count =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_instance_index(
 				&backend,
 				tapestry_id,
 			)
@@ -878,7 +885,7 @@ mod tests {
 
 		// Save initial metadata
 		let initial_metadata = create_test_metadata();
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.as_ref().clone(), initial_metadata)
@@ -910,7 +917,7 @@ mod tests {
 				updated_metadata.tag = format!("concurrent_update_{}", i);
 
 				barrier.wait().await;
-				<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+				<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 					MockTapestryId,
 					MockMetadata,
 				>(&backend, tapestry_id.as_ref().clone(), updated_metadata)
@@ -923,7 +930,7 @@ mod tests {
 
 		// Check final state
 		let instance_count =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_instance_index(
 				&backend,
 				tapestry_id.as_ref().clone(),
 			)
@@ -932,14 +939,14 @@ mod tests {
 			.unwrap();
 		assert_eq!(instance_count, 10);
 
-		let final_metadata: MockMetadata =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata(
-				&backend,
-				tapestry_id.as_ref().clone(),
-			)
-			.await
-			.unwrap()
-			.unwrap();
+		let final_metadata: MockMetadata = <RocksDbBackend<MockConfig> as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_metadata(
+			&backend, tapestry_id.as_ref().clone()
+		)
+		.await
+		.unwrap()
+		.unwrap();
 		assert!(final_metadata.tag.starts_with("concurrent_update_"));
 	}
 
@@ -951,7 +958,7 @@ mod tests {
 		let fragment = create_test_tapestry_fragment();
 
 		// Save initial metadata
-		<RocksDbBackend as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
+		<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::save_tapestry_metadata::<
 			MockTapestryId,
 			MockMetadata,
 		>(&backend, tapestry_id.clone(), initial_metadata.clone())
@@ -962,14 +969,12 @@ mod tests {
 		backend.save_tapestry_fragment(&tapestry_id, fragment, true).await.unwrap();
 
 		// Retrieve updated metadata
-		let updated_metadata: MockMetadata =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata(
-				&backend,
-				tapestry_id,
-			)
-			.await
-			.unwrap()
-			.unwrap();
+		let updated_metadata: MockMetadata = <RocksDbBackend<MockConfig> as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_metadata(&backend, tapestry_id)
+		.await
+		.unwrap()
+		.unwrap();
 
 		assert_eq!(updated_metadata, initial_metadata);
 	}
@@ -979,22 +984,8 @@ mod tests {
 		let backend = create_test_backend();
 		let tapestry_id = MockTapestryId(Uuid::new_v4());
 
-		let result = <RocksDbBackend as TapestryChestHandler<MockConfig>>::get_instance_index(
-			&backend,
-			tapestry_id,
-		)
-		.await
-		.unwrap();
-		assert_eq!(result, None);
-	}
-
-	#[tokio::test]
-	async fn test_get_non_existent_tapestry_metadata() {
-		let backend = create_test_backend();
-		let tapestry_id = MockTapestryId(Uuid::new_v4());
-
-		let result: Option<MockMetadata> =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::get_tapestry_metadata(
+		let result =
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::get_instance_index(
 				&backend,
 				tapestry_id,
 			)
@@ -1004,15 +995,29 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn test_get_non_existent_tapestry_metadata() {
+		let backend = create_test_backend();
+		let tapestry_id = MockTapestryId(Uuid::new_v4());
+
+		let result: Option<MockMetadata> = <RocksDbBackend<MockConfig> as TapestryChestHandler<
+			MockConfig,
+		>>::get_tapestry_metadata(&backend, tapestry_id)
+		.await
+		.unwrap();
+		assert_eq!(result, None);
+	}
+
+	#[tokio::test]
 	async fn test_delete_non_existent_tapestry() {
 		let backend = create_test_backend();
 		let tapestry_id = MockTapestryId(Uuid::new_v4());
 
-		let result = <RocksDbBackend as TapestryChestHandler<MockConfig>>::delete_tapestry(
-			&backend,
-			tapestry_id,
-		)
-		.await;
+		let result =
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::delete_tapestry(
+				&backend,
+				tapestry_id,
+			)
+			.await;
 		assert!(result.is_ok());
 	}
 
@@ -1022,7 +1027,7 @@ mod tests {
 		let tapestry_id = MockTapestryId(Uuid::new_v4());
 
 		let result =
-			<RocksDbBackend as TapestryChestHandler<MockConfig>>::delete_tapestry_fragment(
+			<RocksDbBackend<MockConfig> as TapestryChestHandler<MockConfig>>::delete_tapestry_fragment(
 				&backend,
 				tapestry_id,
 				Some(1),

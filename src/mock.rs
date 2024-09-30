@@ -23,7 +23,7 @@ impl TapestryChestHandler<MockConfig> for MockChest {
 		_tapestry_id: &TID,
 		_tapestry_fragment: TapestryFragment<MockConfig>,
 		_increment: bool,
-	) -> crate::Result<u64> {
+	) -> crate::Result<u64, MockConfig> {
 		Ok(0)
 	}
 
@@ -31,14 +31,14 @@ impl TapestryChestHandler<MockConfig> for MockChest {
 		&self,
 		_tapestry_id: TID,
 		_metadata: M,
-	) -> crate::Result<()> {
+	) -> crate::Result<(), MockConfig> {
 		Ok(())
 	}
 
 	async fn get_instance_index<TID: TapestryId>(
 		&self,
 		_tapestry_id: TID,
-	) -> crate::Result<Option<u16>> {
+	) -> crate::Result<Option<u16>, MockConfig> {
 		Ok(Some(0))
 	}
 
@@ -46,18 +46,21 @@ impl TapestryChestHandler<MockConfig> for MockChest {
 		&self,
 		_tapestry_id: TID,
 		_instance: Option<u64>,
-	) -> crate::Result<Option<TapestryFragment<MockConfig>>> {
+	) -> crate::Result<Option<TapestryFragment<MockConfig>>, MockConfig> {
 		Ok(Some(TapestryFragment { context_tokens: 0, context_messages: vec![] }))
 	}
 
 	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
 		&self,
 		_tapestry_id: TID,
-	) -> crate::Result<Option<M>> {
+	) -> crate::Result<Option<M>, MockConfig> {
 		Ok(Some(serde_json::from_str("{}").unwrap()))
 	}
 
-	async fn delete_tapestry<TID: TapestryId>(&self, _tapestry_id: TID) -> crate::Result<()> {
+	async fn delete_tapestry<TID: TapestryId>(
+		&self,
+		_tapestry_id: TID,
+	) -> crate::Result<(), MockConfig> {
 		Ok(())
 	}
 
@@ -65,7 +68,7 @@ impl TapestryChestHandler<MockConfig> for MockChest {
 		&self,
 		_tapestry_id: TID,
 		_instance: Option<u64>,
-	) -> crate::Result<()> {
+	) -> crate::Result<(), MockConfig> {
 		Ok(())
 	}
 }
@@ -104,17 +107,14 @@ impl Llm<MockConfig> for MockLlm {
 	type Parameters = ();
 	type Request = MockLlmRequest;
 	type Response = MockLlmResponse;
+	type PromptError = MockPromptError;
 
-	fn count_tokens(content: &str) -> Result<Self::Tokens> {
+	fn count_tokens(content: &str) -> Result<Self::Tokens, MockConfig> {
 		let bpe = p50k_base().unwrap();
 		let tokens = bpe.encode_with_special_tokens(&content.to_string());
 
 		tokens.len().try_into().map_err(|_| {
-			LoomError::from(WeaveError::BadConfig(format!(
-				"Number of tokens exceeds max tokens for model: {}",
-				content
-			)))
-			.into()
+			LoomError::Llm(MockPromptError::BadConfig("Token count exceeds u16".to_string()))
 		})
 	}
 
@@ -133,7 +133,7 @@ impl Llm<MockConfig> for MockLlm {
 		_msgs: Vec<Self::Request>,
 		_params: &Self::Parameters,
 		_max_tokens: Self::Tokens,
-	) -> Result<Self::Response> {
+	) -> Result<Self::Response, MockConfig> {
 		Ok(MockLlmResponse {})
 	}
 
@@ -202,4 +202,10 @@ impl From<MockLlmResponse> for Option<String> {
 	fn from(_msg: MockLlmResponse) -> Self {
 		Some("TestLlmResponse".to_string())
 	}
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum MockPromptError {
+	#[error("Bad configuration: {0}")]
+	BadConfig(String),
 }

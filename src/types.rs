@@ -59,25 +59,17 @@ impl From<WrapperRole> for String {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum LoomError {
-	#[error("Weave error: {0}")]
-	Weave(#[from] WeaveError),
+pub enum LoomError<T: Config> {
+	#[error(transparent)]
+	Llm(<T::PromptModel as Llm<T>>::PromptError),
 	#[error("Storage error: {0}")]
 	Storage(#[from] StorageError),
-	#[error("Error: {0}")]
-	UnknownError(String),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum WeaveError {
-	#[error("Exceeds max prompt tokens")]
-	MaxCompletionTokensIsZero,
 	#[error("Bad configuration: {0}")]
 	BadConfig(String),
-	#[error("Not enough credits to cover cost")]
-	NotEnoughCredits,
+	#[error("Exceeds max prompt tokens")]
+	MaxCompletionTokensIsZero,
 	#[error("Unknown error: {0}")]
-	Unknown(String),
+	UnknownError(String),
 }
 
 #[derive(Debug, thiserror::Error)]

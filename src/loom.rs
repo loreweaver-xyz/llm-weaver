@@ -6,7 +6,7 @@ use tracing::{debug, error, instrument, trace};
 use crate::{
 	types::{
 		LoomError, PromptModelRequest, PromptModelTokens, SummaryModelTokens, VecPromptMsgsDeque,
-		WeaveError, WrapperRole, ASSISTANT_ROLE, SYSTEM_ROLE,
+		WrapperRole, ASSISTANT_ROLE, SYSTEM_ROLE,
 	},
 	Config, ContextMessage, Llm, LlmConfig, TapestryChestHandler, TapestryFragment, TapestryId,
 };
@@ -52,7 +52,7 @@ impl<T: Config> Loom<T> {
 		tapestry_id: TID,
 		instructions: String,
 		mut msgs: Vec<ContextMessage<T>>,
-	) -> Result<(<<T as Config>::PromptModel as Llm<T>>::Response, u64, bool), LoomError> {
+	) -> Result<(<<T as Config>::PromptModel as Llm<T>>::Response, u64, bool), LoomError<T>> {
 		let instructions_ctx_msg =
 			Self::build_context_message(SYSTEM_ROLE.into(), instructions, None);
 		let instructions_req_msg: PromptModelRequest<T> = instructions_ctx_msg.clone().into();
@@ -150,7 +150,7 @@ impl<T: Config> Loom<T> {
 		trace!("Max completion tokens available: {:?}", max_completion_tokens);
 
 		if max_completion_tokens.is_zero() {
-			return Err(LoomError::from(WeaveError::MaxCompletionTokensIsZero).into());
+			return Err(LoomError::MaxCompletionTokensIsZero.into());
 		}
 
 		trace!("Prompting LLM with request messages");
@@ -208,7 +208,7 @@ impl<T: Config> Loom<T> {
 		summary_model_config: &LlmConfig<T, T::SummaryModel>,
 		tapestry_fragment: &TapestryFragment<T>,
 		summary_max_tokens: SummaryModelTokens<T>,
-	) -> Result<String, LoomError> {
+	) -> Result<String, LoomError<T>> {
 		trace!(
 			"Generating summary with max tokens: {:?}, for tapestry fragment: {:?}",
 			summary_max_tokens,
